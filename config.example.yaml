@@ -1,0 +1,37 @@
+# 理想汽车订单监控配置示例
+# 复制此文件为 config.yaml 并修改相应配置
+
+# 订单 ID (必填)
+# 从你的订单详情页面 URL 中获取
+order_id: "177971759268550919"
+
+# 锁单时间配置 (用于计算预计交付时间)
+# 锁单时间 - 请填入你的实际锁单时间
+lock_order_time: "2025-09-27 13:08:00"
+# 预计交付周数范围 (理想汽车通常是7-9周)
+estimate_weeks_min: 7
+estimate_weeks_max: 9
+
+# 检查间隔 (可选，默认每30分钟)
+# 支持的格式:
+# @every 30m - 每30分钟
+# @every 1h - 每小时
+# @every 30s - 每30秒
+# "0 */30 * * * *" - 使用标准 cron 表达式 (带秒)
+check_interval: "@every 30m"
+
+# 微信机器人 Webhook URL (可选)
+# 请替换为你的微信群机器人 Webhook URL
+# 获取方法请参考 WECHAT_SETUP.md
+wechat_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_WEBHOOK_KEY"
+
+# ServerChan 配置 (可选)
+# 请填入你的 SendKey，获取方式: https://sct.ftqq.com/
+# 注册后在发送通道页面获取 SendKey
+serverchan_sendkey: "SCT123456T"
+serverchan_baseurl: "https://sctapi.ftqq.com/"
+
+# 理想汽车请求的 Cookies (必填)
+# 请从浏览器开发者工具中复制完整的 Cookie 字符串
+# 获取方法请参考 README.md
+lixiang_cookies: ""
