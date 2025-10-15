@@ -9,10 +9,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
 	"github.com/spf13/viper"
+)
+
+// 时间格式常量
+const (
+	DateTimeFormat = "2006-01-02 15:04:05"
+	DateTimeShort  = "2006-01-02 15:04"
+	DateFormat     = "2006-01-02"
 )
 
 // 理想汽车订单响应结构
@@ -138,11 +146,11 @@ func (wc *WeChatWebhookNotifier) Send(title, content string) error {
 func parseLockOrderTime(timeStr string) (time.Time, error) {
 	// 支持多种时间格式
 	formats := []string{
-		"2006-01-02 15:04:05",
+		DateTimeFormat,
 		"2006/01/02 15:04:05",
-		"2006-01-02 15:04",
+		DateTimeShort,
 		"2006/01/02 15:04",
-		"2006-01-02",
+		DateFormat,
 		"2006/01/02",
 	}
 
@@ -162,24 +170,172 @@ func (m *Monitor) calculateEstimatedDelivery() (time.Time, time.Time) {
 	return minDate, maxDate
 }
 
+// 基于当前时间计算剩余交付时间
+func (m *Monitor) calculateRemainingDeliveryTime() (int, int, string) {
+	now := time.Now()
+	minDate, maxDate := m.calculateEstimatedDelivery()
+
+	// 计算距离交付时间的天数
+	daysToMin := int(minDate.Sub(now).Hours() / 24)
+	daysToMax := int(maxDate.Sub(now).Hours() / 24)
+
+	var status string
+	if now.After(maxDate) {
+		// 已超过预计交付时间
+		overdueDays := int(now.Sub(maxDate).Hours() / 24)
+		status = fmt.Sprintf("已超期 %d 天", overdueDays)
+	} else if now.After(minDate) {
+		// 在预计交付时间范围内
+		status = "在预计交付时间范围内"
+	} else if daysToMin <= 0 {
+		// 今天或明天就到交付时间
+		status = "即将到达交付时间"
+	} else {
+		// 还有若干天
+		status = fmt.Sprintf("还有 %d-%d 天", daysToMin, daysToMax)
+	}
+
+	return daysToMin, daysToMax, status
+}
+
+// 计算交付进度百分比
+func (m *Monitor) calculateDeliveryProgress() float64 {
+	now := time.Now()
+
+	// 计算从锁单到预计交付的总时间（取最大值）
+	_, maxDate := m.calculateEstimatedDelivery()
+	totalDuration := maxDate.Sub(m.LockOrderTime)
+
+	// 计算已经过去的时间
+	elapsedDuration := now.Sub(m.LockOrderTime)
+
+	// 计算进度百分比
+	progress := float64(elapsedDuration) / float64(totalDuration) * 100
+
+	// 确保进度在 0-100% 之间
+	if progress < 0 {
+		progress = 0
+	} else if progress > 100 {
+		progress = 100
+	}
+
+	return progress
+}
+
 // 格式化交付日期范围
 func (m *Monitor) formatDeliveryEstimate() string {
 	minDate, maxDate := m.calculateEstimatedDelivery()
+	_, _, status := m.calculateRemainingDeliveryTime()
+	progress := m.calculateDeliveryProgress()
 
+	baseInfo := ""
 	if m.EstimateWeeksMin == m.EstimateWeeksMax {
-		return fmt.Sprintf("预计 %d 周后交付 (%s 左右)",
+		baseInfo = fmt.Sprintf("预计 %d 周后交付 (%s 左右)",
 			m.EstimateWeeksMin,
-			minDate.Format("2006-01-02"))
+			minDate.Format(DateFormat))
+	} else {
+		baseInfo = fmt.Sprintf("预计 %d-%d 周后交付 (%s 至 %s)",
+			m.EstimateWeeksMin,
+			m.EstimateWeeksMax,
+			minDate.Format(DateFormat),
+			maxDate.Format(DateFormat))
 	}
 
-	return fmt.Sprintf("预计 %d-%d 周后交付 (%s 至 %s)",
-		m.EstimateWeeksMin,
-		m.EstimateWeeksMax,
-		minDate.Format("2006-01-02"),
-		maxDate.Format("2006-01-02"))
+	// 添加当前时间状态和进度信息
+	now := time.Now()
+	if now.Before(minDate) {
+		// 还未到交付时间
+		return fmt.Sprintf("%s\n📅 当前状态: %s\n📊 等待进度: %.1f%%",
+			baseInfo, status, progress)
+	} else if now.After(maxDate) {
+		// 已超过交付时间
+		return fmt.Sprintf("%s\n⚠️  当前状态: %s\n📊 进度: %.1f%% (已超期)",
+			baseInfo, status, progress)
+	} else {
+		// 在交付时间范围内
+		return fmt.Sprintf("%s\n✅ 当前状态: %s\n📊 进度: %.1f%%",
+			baseInfo, status, progress)
+	}
 }
 
-// 检查是否临近预计交付时间
+// 获取详细的交付时间信息
+func (m *Monitor) getDetailedDeliveryInfo() string {
+	now := time.Now()
+	minDate, maxDate := m.calculateEstimatedDelivery()
+	_, _, status := m.calculateRemainingDeliveryTime()
+	progress := m.calculateDeliveryProgress()
+
+	// 计算锁单至今的天数
+	daysSinceLock := int(now.Sub(m.LockOrderTime).Hours() / 24)
+
+	info := fmt.Sprintf("📅 锁单时间: %s (%d天前)\n",
+		m.LockOrderTime.Format(DateTimeShort), daysSinceLock)
+
+	info += fmt.Sprintf("🔮 基于锁单时间预测: %s\n", m.formatDeliveryEstimate())
+	info += fmt.Sprintf("📊 当前状态: %s (进度: %.1f%%)\n", status, progress)
+
+	// 添加具体的倒计时信息
+	if now.Before(minDate) {
+		daysToMin := int(minDate.Sub(now).Hours() / 24)
+		daysToMax := int(maxDate.Sub(now).Hours() / 24)
+		if daysToMin <= 7 {
+			info += fmt.Sprintf("⏰ 距离最早交付时间: %d天\n", daysToMin)
+		}
+		if daysToMax <= 14 {
+			info += fmt.Sprintf("⏰ 距离最晚交付时间: %d天\n", daysToMax)
+		}
+	}
+
+	return info
+}
+
+// 获取交付时间智能分析报告
+func (m *Monitor) getDeliveryAnalysisReport() string {
+	now := time.Now()
+	minDate, maxDate := m.calculateEstimatedDelivery()
+	daysToMin, _, status := m.calculateRemainingDeliveryTime()
+	progress := m.calculateDeliveryProgress()
+
+	report := "📊 交付时间智能分析报告\n"
+	report += "=" + strings.Repeat("=", 30) + "\n\n"
+
+	// 基本信息
+	daysSinceLock := int(now.Sub(m.LockOrderTime).Hours() / 24)
+	report += fmt.Sprintf("🔐 锁单信息: %s (%d天前)\n",
+		m.LockOrderTime.Format(DateTimeShort), daysSinceLock)
+
+	report += fmt.Sprintf("📅 预计交付: %s - %s\n",
+		minDate.Format(DateFormat), maxDate.Format(DateFormat))
+
+	report += fmt.Sprintf("📈 当前进度: %.1f%%\n", progress)
+	report += fmt.Sprintf("⏱️  剩余时间: %s\n\n", status)
+
+	// 时间状态分析
+	if now.Before(minDate) {
+		if daysToMin <= 3 {
+			report += "🚨 紧急提醒: 即将进入交付时间窗口！\n"
+		} else if daysToMin <= 7 {
+			report += "⚡ 重要提醒: 距离交付时间不到一周\n"
+		} else if daysToMin <= 14 {
+			report += "📢 提前提醒: 距离交付时间不到两周\n"
+		} else {
+			report += "😌 状态良好: 还有充足的等待时间\n"
+		}
+	} else if now.After(minDate) && now.Before(maxDate) {
+		report += "🎯 关键时期: 正处于预计交付时间范围内\n"
+		report += "👀 建议: 密切关注官方通知\n"
+	} else if now.After(maxDate) {
+		overdueDays := int(now.Sub(maxDate).Hours() / 24)
+		report += "⚠️  延期状态: 已超过预计交付时间\n"
+		if overdueDays <= 7 {
+			report += "💡 建议: 可联系客服了解具体情况\n"
+		} else {
+			report += "📞 建议: 强烈建议联系客服获取最新进展\n"
+		}
+	}
+
+	return report
+} // 检查是否临近预计交付时间
 func (m *Monitor) isApproachingDelivery() (bool, string) {
 	now := time.Now()
 	minDate, maxDate := m.calculateEstimatedDelivery()
@@ -236,7 +392,7 @@ func NewMonitor() *Monitor {
 	lockOrderTime, err := parseLockOrderTime(lockOrderTimeStr)
 	if err != nil {
 		log.Printf("锁单时间解析失败: %v, 使用默认时间", err)
-		lockOrderTime, _ = time.Parse("2006-01-02 15:04:05", "2025-09-27 13:08:00")
+		lockOrderTime, _ = time.Parse(DateTimeFormat, "2025-09-27 13:08:00")
 	}
 
 	monitor := &Monitor{
@@ -392,7 +548,7 @@ func (m *Monitor) checkDeliveryTime() {
 	predictedDelivery := m.formatDeliveryEstimate()
 	isApproaching, approachMsg := m.isApproachingDelivery()
 
-	log.Printf("锁单时间: %s", m.LockOrderTime.Format("2006-01-02 15:04:05"))
+	log.Printf("锁单时间: %s", m.LockOrderTime.Format(DateTimeFormat))
 	log.Printf("基于锁单时间预测: %s", predictedDelivery)
 	if isApproaching {
 		log.Printf("交付提醒: %s", approachMsg)
@@ -405,11 +561,10 @@ func (m *Monitor) checkDeliveryTime() {
 
 		// 发送初始通知
 		title := "🚗 理想汽车订单监控已启动"
-		content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n\n📅 锁单时间: %s\n🔮 基于锁单时间预测: %s",
+		content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n\n%s",
 			m.OrderID,
 			currentEstimateTime,
-			m.LockOrderTime.Format("2006-01-02 15:04"),
-			predictedDelivery)
+			m.getDetailedDeliveryInfo())
 
 		if isApproaching {
 			content += "\n\n⚠️ " + approachMsg
@@ -426,13 +581,12 @@ func (m *Monitor) checkDeliveryTime() {
 		log.Printf("检测到交付时间变化！从 %s 变更为 %s", m.LastEstimateTime, currentEstimateTime)
 
 		title := "🚗 理想汽车交付时间更新通知"
-		content := fmt.Sprintf("订单号: %s\n原官方预计时间: %s\n新官方预计时间: %s\n变更时间: %s\n\n📅 锁单时间: %s\n🔮 基于锁单时间预测: %s",
+		content := fmt.Sprintf("订单号: %s\n原官方预计时间: %s\n新官方预计时间: %s\n变更时间: %s\n\n%s",
 			m.OrderID,
 			m.LastEstimateTime,
 			currentEstimateTime,
-			time.Now().Format("2006-01-02 15:04:05"),
-			m.LockOrderTime.Format("2006-01-02 15:04"),
-			predictedDelivery)
+			time.Now().Format(DateTimeFormat),
+			m.getDetailedDeliveryInfo())
 
 		if isApproaching {
 			content += "\n\n⚠️ " + approachMsg
@@ -450,10 +604,10 @@ func (m *Monitor) checkDeliveryTime() {
 		// 即使官方时间没变化，如果临近预计交付时间也发送提醒
 		if isApproaching {
 			title := "⏰ 理想汽车交付时间提醒"
-			content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n🔮 基于锁单时间预测: %s\n\n⚠️ %s",
+			content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n\n%s\n\n⚠️ %s",
 				m.OrderID,
 				currentEstimateTime,
-				predictedDelivery,
+				m.getDetailedDeliveryInfo(),
 				approachMsg)
 
 			if err := m.sendNotification(title, content); err != nil {
