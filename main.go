@@ -69,6 +69,12 @@ type Monitor struct {
 	EstimateWeeksMin int       // 预计交付周数范围（最小）
 	EstimateWeeksMax int       // 预计交付周数范围（最大）
 	cron             *cron.Cron
+
+	// 定期通知相关字段
+	LastNotificationTime        time.Time     // 上次发送通知的时间
+	NotificationInterval        time.Duration // 通知间隔（当交付时间未更新时）
+	EnablePeriodicNotify        bool          // 是否启用定期通知
+	AlwaysNotifyWhenApproaching bool          // 临近交付时总是通知
 }
 
 // ServerChan 通知器实现
@@ -368,6 +374,28 @@ func (m *Monitor) isApproachingDelivery() (bool, string) {
 	return false, ""
 }
 
+// 检查是否应该发送定期通知
+func (m *Monitor) shouldSendPeriodicNotification() bool {
+	if !m.EnablePeriodicNotify {
+		return false
+	}
+
+	now := time.Now()
+
+	// 如果从未发送过通知，返回false（初始通知会单独处理）
+	if m.LastNotificationTime.IsZero() {
+		return false
+	}
+
+	// 检查是否已经超过通知间隔
+	return now.Sub(m.LastNotificationTime) >= m.NotificationInterval
+}
+
+// 更新最后通知时间
+func (m *Monitor) updateLastNotificationTime() {
+	m.LastNotificationTime = time.Now()
+}
+
 func NewMonitor() *Monitor {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -386,6 +414,10 @@ func NewMonitor() *Monitor {
 	viper.SetDefault("lock_order_time", "2025-09-27 13:08:00")
 	viper.SetDefault("estimate_weeks_min", 7)
 	viper.SetDefault("estimate_weeks_max", 9)
+	// 新增定期通知配置
+	viper.SetDefault("enable_periodic_notify", true)         // 启用定期通知
+	viper.SetDefault("notification_interval_hours", 24)      // 24小时发送一次状态通知
+	viper.SetDefault("always_notify_when_approaching", true) // 临近交付时总是通知
 
 	// 解析锁单时间
 	lockOrderTimeStr := viper.GetString("lock_order_time")
@@ -402,6 +434,11 @@ func NewMonitor() *Monitor {
 		LockOrderTime:    lockOrderTime,
 		EstimateWeeksMin: viper.GetInt("estimate_weeks_min"),
 		EstimateWeeksMax: viper.GetInt("estimate_weeks_max"),
+		// 新增字段初始化
+		EnablePeriodicNotify:        viper.GetBool("enable_periodic_notify"),
+		NotificationInterval:        time.Duration(viper.GetInt("notification_interval_hours")) * time.Hour,
+		AlwaysNotifyWhenApproaching: viper.GetBool("always_notify_when_approaching"),
+		LastNotificationTime:        time.Time{}, // 初始化为零值，表示从未发送过通知
 		LixiangHeaders: map[string]string{
 			"accept":             "application/json, text/plain, */*",
 			"accept-language":    "en-US,en;q=0.9,zh-CN;q=0.8,zh-TW;q=0.7,zh;q=0.6",
@@ -572,6 +609,9 @@ func (m *Monitor) checkDeliveryTime() {
 
 		if err := m.sendNotification(title, content); err != nil {
 			log.Printf("发送初始通知失败: %v", err)
+		} else {
+			// 初始通知成功后也要更新通知时间
+			m.updateLastNotificationTime()
 		}
 		return
 	}
@@ -596,23 +636,61 @@ func (m *Monitor) checkDeliveryTime() {
 			log.Printf("发送变更通知失败: %v", err)
 		}
 
-		// 更新记录的时间
+		// 更新记录的时间和通知时间
 		m.LastEstimateTime = currentEstimateTime
+		m.updateLastNotificationTime()
 	} else {
 		log.Println("交付时间未发生变化")
 
-		// 即使官方时间没变化，如果临近预计交付时间也发送提醒
-		if isApproaching {
-			title := "⏰ 理想汽车交付时间提醒"
-			content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n\n%s\n\n⚠️ %s",
+		// 检查是否需要发送定期通知或临近交付提醒
+		shouldNotifyPeriodic := m.shouldSendPeriodicNotification()
+		shouldNotifyApproaching := isApproaching && m.AlwaysNotifyWhenApproaching
+
+		if shouldNotifyPeriodic || shouldNotifyApproaching {
+			var title string
+			var notifyReasons []string
+
+			if shouldNotifyPeriodic {
+				title = "📊 理想汽车订单状态定期报告"
+				notifyReasons = append(notifyReasons, "定期状态更新")
+				log.Printf("发送定期通知，距离上次通知已过 %.1f 小时",
+					time.Since(m.LastNotificationTime).Hours())
+			}
+
+			if shouldNotifyApproaching {
+				if title == "" {
+					title = "⏰ 理想汽车交付时间提醒"
+				}
+				notifyReasons = append(notifyReasons, "临近交付时间")
+				log.Printf("发送临近交付提醒: %s", approachMsg)
+			}
+
+			content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n通知原因: %s\n\n%s",
 				m.OrderID,
 				currentEstimateTime,
-				m.getDetailedDeliveryInfo(),
-				approachMsg)
+				strings.Join(notifyReasons, "、"),
+				m.getDetailedDeliveryInfo())
+
+			if isApproaching {
+				content += "\n\n⚠️ " + approachMsg
+			}
+
+			// 添加定期通知的额外信息
+			if shouldNotifyPeriodic {
+				content += fmt.Sprintf("\n\n📅 通知间隔: 每%.0f小时\n⏰ 下次通知时间: %s",
+					m.NotificationInterval.Hours(),
+					time.Now().Add(m.NotificationInterval).Format(DateTimeShort))
+			}
 
 			if err := m.sendNotification(title, content); err != nil {
-				log.Printf("发送提醒通知失败: %v", err)
+				log.Printf("发送通知失败: %v", err)
+			} else {
+				// 只有成功发送通知后才更新时间
+				m.updateLastNotificationTime()
+				log.Printf("成功发送通知，原因: %s", strings.Join(notifyReasons, "、"))
 			}
+		} else {
+			log.Println("无需发送通知：未到定期通知时间且非临近交付期")
 		}
 	}
 }
