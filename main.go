@@ -10,8 +10,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/robfig/cron/v3"
 	"github.com/spf13/viper"
 )
@@ -75,6 +77,10 @@ type Monitor struct {
 	NotificationInterval        time.Duration // 通知间隔（当交付时间未更新时）
 	EnablePeriodicNotify        bool          // 是否启用定期通知
 	AlwaysNotifyWhenApproaching bool          // 临近交付时总是通知
+
+	// 配置热加载相关
+	mu            sync.RWMutex // 读写锁，保护配置的并发访问
+	configVersion int          // 配置版本号，用于跟踪配置变化
 }
 
 // ServerChan 通知器实现
@@ -396,6 +402,112 @@ func (m *Monitor) updateLastNotificationTime() {
 	m.LastNotificationTime = time.Now()
 }
 
+// 加载或重新加载配置
+func (m *Monitor) loadConfig() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 解析锁单时间
+	lockOrderTimeStr := viper.GetString("lock_order_time")
+	lockOrderTime, err := parseLockOrderTime(lockOrderTimeStr)
+	if err != nil {
+		log.Printf("锁单时间解析失败: %v, 保持当前时间", err)
+		if m.LockOrderTime.IsZero() {
+			lockOrderTime, _ = time.Parse(DateTimeFormat, "2025-09-27 13:08:00")
+		} else {
+			lockOrderTime = m.LockOrderTime
+		}
+	}
+
+	// 更新配置
+	m.OrderID = viper.GetString("order_id")
+	m.LixiangCookies = viper.GetString("lixiang_cookies")
+	m.LockOrderTime = lockOrderTime
+	m.EstimateWeeksMin = viper.GetInt("estimate_weeks_min")
+	m.EstimateWeeksMax = viper.GetInt("estimate_weeks_max")
+	m.EnablePeriodicNotify = viper.GetBool("enable_periodic_notify")
+	m.NotificationInterval = time.Duration(viper.GetInt("notification_interval_hours")) * time.Hour
+	m.AlwaysNotifyWhenApproaching = viper.GetBool("always_notify_when_approaching")
+
+	// 检查检查间隔是否变化
+	newCheckInterval := viper.GetString("check_interval")
+	if newCheckInterval != m.CheckInterval {
+		m.CheckInterval = newCheckInterval
+		// 如果 cron 已经启动，需要重新配置定时任务
+		if m.cron != nil {
+			return fmt.Errorf("检查间隔已变更，需要重启服务")
+		}
+	}
+
+	// 重新初始化通知器
+	var notifiers []Notifier
+
+	// 添加微信群机器人通知器
+	wechatWebhookURL := viper.GetString("wechat_webhook_url")
+	if wechatWebhookURL != "" {
+		notifiers = append(notifiers, &WeChatWebhookNotifier{
+			WebhookURL: wechatWebhookURL,
+		})
+	}
+
+	// 添加 ServerChan 通知器
+	serverChanSendKey := viper.GetString("serverchan_sendkey")
+	if serverChanSendKey != "" {
+		notifiers = append(notifiers, &ServerChanNotifier{
+			SendKey: serverChanSendKey,
+			BaseURL: viper.GetString("serverchan_baseurl"),
+		})
+	}
+
+	m.Notifiers = notifiers
+	m.configVersion++
+
+	log.Printf("配置已加载，版本: %d", m.configVersion)
+	return nil
+}
+
+// 监听配置文件变化
+func (m *Monitor) watchConfig() {
+	viper.OnConfigChange(func(e fsnotify.Event) {
+		log.Printf("检测到配置文件变化: %s", e.Name)
+
+		// 重新读取配置
+		if err := viper.ReadInConfig(); err != nil {
+			log.Printf("重新读取配置文件失败: %v", err)
+			return
+		}
+
+		// 重新加载配置
+		if err := m.loadConfig(); err != nil {
+			log.Printf("重新加载配置失败: %v", err)
+			if err.Error() == "检查间隔已变更，需要重启服务" {
+				log.Println("⚠️  检测到检查间隔变更，请手动重启服务以应用新的检查间隔")
+			}
+			return
+		}
+
+		log.Println("✅ 配置已成功热加载")
+
+		// 发送配置更新通知
+		title := "⚙️ 监控服务配置已更新"
+		content := fmt.Sprintf("配置版本: %d\n更新时间: %s\n\n当前配置:\n订单ID: %s\n检查间隔: %s\n通知器数量: %d\n定期通知: %v\n通知间隔: %.0f小时",
+			m.configVersion,
+			time.Now().Format(DateTimeFormat),
+			m.OrderID,
+			m.CheckInterval,
+			len(m.Notifiers),
+			m.EnablePeriodicNotify,
+			m.NotificationInterval.Hours())
+
+		if err := m.sendNotification(title, content); err != nil {
+			log.Printf("发送配置更新通知失败: %v", err)
+		}
+	})
+
+	viper.WatchConfig()
+	log.Println("✅ 配置文件监听已启动")
+}
+
 func NewMonitor() *Monitor {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -419,26 +531,8 @@ func NewMonitor() *Monitor {
 	viper.SetDefault("notification_interval_hours", 24)      // 24小时发送一次状态通知
 	viper.SetDefault("always_notify_when_approaching", true) // 临近交付时总是通知
 
-	// 解析锁单时间
-	lockOrderTimeStr := viper.GetString("lock_order_time")
-	lockOrderTime, err := parseLockOrderTime(lockOrderTimeStr)
-	if err != nil {
-		log.Printf("锁单时间解析失败: %v, 使用默认时间", err)
-		lockOrderTime, _ = time.Parse(DateTimeFormat, "2025-09-27 13:08:00")
-	}
-
 	monitor := &Monitor{
-		OrderID:          viper.GetString("order_id"),
-		CheckInterval:    viper.GetString("check_interval"),
-		LixiangCookies:   viper.GetString("lixiang_cookies"),
-		LockOrderTime:    lockOrderTime,
-		EstimateWeeksMin: viper.GetInt("estimate_weeks_min"),
-		EstimateWeeksMax: viper.GetInt("estimate_weeks_max"),
-		// 新增字段初始化
-		EnablePeriodicNotify:        viper.GetBool("enable_periodic_notify"),
-		NotificationInterval:        time.Duration(viper.GetInt("notification_interval_hours")) * time.Hour,
-		AlwaysNotifyWhenApproaching: viper.GetBool("always_notify_when_approaching"),
-		LastNotificationTime:        time.Time{}, // 初始化为零值，表示从未发送过通知
+		LastNotificationTime: time.Time{}, // 初始化为零值，表示从未发送过通知
 		LixiangHeaders: map[string]string{
 			"accept":             "application/json, text/plain, */*",
 			"accept-language":    "en-US,en;q=0.9,zh-CN;q=0.8,zh-TW;q=0.7,zh;q=0.6",
@@ -457,42 +551,35 @@ func NewMonitor() *Monitor {
 			"x-chj-sourceurl":    "https://www.lixiang.com/?chjchannelcode=102002",
 			"x-chj-traceid":      "75697683-7eae-0fbe-ae8e-86bfa4aab99d",
 		},
-		cron: cron.New(cron.WithSeconds()),
+		cron:          cron.New(cron.WithSeconds()),
+		configVersion: 0,
 	}
 
-	// 初始化通知器
-	var notifiers []Notifier
-
-	// 添加微信群机器人通知器
-	wechatWebhookURL := viper.GetString("wechat_webhook_url")
-	if wechatWebhookURL != "" {
-		notifiers = append(notifiers, &WeChatWebhookNotifier{
-			WebhookURL: wechatWebhookURL,
-		})
-		log.Println("✅ 微信群机器人通知器已配置")
+	// 加载初始配置
+	if err := monitor.loadConfig(); err != nil {
+		log.Printf("加载初始配置失败: %v", err)
 	}
 
-	// 添加 ServerChan 通知器
-	serverChanSendKey := viper.GetString("serverchan_sendkey")
-	if serverChanSendKey != "" {
-		notifiers = append(notifiers, &ServerChanNotifier{
-			SendKey: serverChanSendKey,
-			BaseURL: viper.GetString("serverchan_baseurl"),
-		})
-		log.Println("✅ ServerChan 通知器已配置")
-	}
+	// 启动配置文件监听
+	monitor.watchConfig()
 
-	monitor.Notifiers = notifiers
-
-	if len(notifiers) == 0 {
+	if len(monitor.Notifiers) == 0 {
 		log.Println("⚠️  未配置任何通知器，将不会发送通知")
+	} else {
+		log.Printf("✅ 已配置 %d 个通知器", len(monitor.Notifiers))
 	}
 
 	return monitor
 }
 
 func (m *Monitor) fetchOrderData() (*OrderResponse, error) {
-	url := fmt.Sprintf("https://api-web.lixiang.com/vehicle-api/v1-0/orders/pointer/vehicleOrderDetail_PC/%s", m.OrderID)
+	m.mu.RLock()
+	orderID := m.OrderID
+	cookies := m.LixiangCookies
+	headers := m.LixiangHeaders
+	m.mu.RUnlock()
+
+	url := fmt.Sprintf("https://api-web.lixiang.com/vehicle-api/v1-0/orders/pointer/vehicleOrderDetail_PC/%s", orderID)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -500,13 +587,13 @@ func (m *Monitor) fetchOrderData() (*OrderResponse, error) {
 	}
 
 	// 设置请求头
-	for key, value := range m.LixiangHeaders {
+	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
 
 	// 设置 Cookie
-	if m.LixiangCookies != "" {
-		req.Header.Set("Cookie", m.LixiangCookies)
+	if cookies != "" {
+		req.Header.Set("Cookie", cookies)
 	}
 
 	client := &http.Client{
@@ -537,7 +624,11 @@ func (m *Monitor) fetchOrderData() (*OrderResponse, error) {
 }
 
 func (m *Monitor) sendNotification(title, content string) error {
-	if len(m.Notifiers) == 0 {
+	m.mu.RLock()
+	notifiers := m.Notifiers
+	m.mu.RUnlock()
+
+	if len(notifiers) == 0 {
 		log.Println("未配置任何通知器，跳过通知")
 		return nil
 	}
@@ -545,7 +636,7 @@ func (m *Monitor) sendNotification(title, content string) error {
 	var errors []string
 	successCount := 0
 
-	for _, notifier := range m.Notifiers {
+	for _, notifier := range notifiers {
 		if err := notifier.Send(title, content); err != nil {
 			log.Printf("通知发送失败: %v", err)
 			errors = append(errors, err.Error())
@@ -560,7 +651,7 @@ func (m *Monitor) sendNotification(title, content string) error {
 		log.Printf("部分通知器发送失败: %v", errors)
 	}
 
-	log.Printf("成功发送 %d/%d 个通知", successCount, len(m.Notifiers))
+	log.Printf("成功发送 %d/%d 个通知", successCount, len(notifiers))
 	return nil
 }
 
@@ -581,25 +672,35 @@ func (m *Monitor) checkDeliveryTime() {
 	currentEstimateTime := orderData.Data.Delivery.EstimateDeliveringAt
 	log.Printf("当前预计交付时间: %s", currentEstimateTime)
 
+	// 读取配置（加锁保护）
+	m.mu.RLock()
+	orderID := m.OrderID
+	lockOrderTime := m.LockOrderTime
+	lastEstimateTime := m.LastEstimateTime
+	m.mu.RUnlock()
+
 	// 计算基于锁单时间的预测
 	predictedDelivery := m.formatDeliveryEstimate()
 	isApproaching, approachMsg := m.isApproachingDelivery()
 
-	log.Printf("锁单时间: %s", m.LockOrderTime.Format(DateTimeFormat))
+	log.Printf("锁单时间: %s", lockOrderTime.Format(DateTimeFormat))
 	log.Printf("基于锁单时间预测: %s", predictedDelivery)
 	if isApproaching {
 		log.Printf("交付提醒: %s", approachMsg)
 	}
 
 	// 如果是第一次检查，记录当前时间
-	if m.LastEstimateTime == "" {
+	if lastEstimateTime == "" {
+		m.mu.Lock()
 		m.LastEstimateTime = currentEstimateTime
+		m.mu.Unlock()
+
 		log.Println("初次检查，记录当前交付时间")
 
 		// 发送初始通知
 		title := "🚗 理想汽车订单监控已启动"
 		content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n\n%s",
-			m.OrderID,
+			orderID,
 			currentEstimateTime,
 			m.getDetailedDeliveryInfo())
 
@@ -617,13 +718,13 @@ func (m *Monitor) checkDeliveryTime() {
 	}
 
 	// 检查时间是否发生变化
-	if currentEstimateTime != m.LastEstimateTime {
-		log.Printf("检测到交付时间变化！从 %s 变更为 %s", m.LastEstimateTime, currentEstimateTime)
+	if currentEstimateTime != lastEstimateTime {
+		log.Printf("检测到交付时间变化！从 %s 变更为 %s", lastEstimateTime, currentEstimateTime)
 
 		title := "🚗 理想汽车交付时间更新通知"
 		content := fmt.Sprintf("订单号: %s\n原官方预计时间: %s\n新官方预计时间: %s\n变更时间: %s\n\n%s",
-			m.OrderID,
-			m.LastEstimateTime,
+			orderID,
+			lastEstimateTime,
 			currentEstimateTime,
 			time.Now().Format(DateTimeFormat),
 			m.getDetailedDeliveryInfo())
@@ -637,14 +738,22 @@ func (m *Monitor) checkDeliveryTime() {
 		}
 
 		// 更新记录的时间和通知时间
+		m.mu.Lock()
 		m.LastEstimateTime = currentEstimateTime
+		m.mu.Unlock()
 		m.updateLastNotificationTime()
 	} else {
 		log.Println("交付时间未发生变化")
 
 		// 检查是否需要发送定期通知或临近交付提醒
 		shouldNotifyPeriodic := m.shouldSendPeriodicNotification()
-		shouldNotifyApproaching := isApproaching && m.AlwaysNotifyWhenApproaching
+
+		m.mu.RLock()
+		alwaysNotifyWhenApproaching := m.AlwaysNotifyWhenApproaching
+		notificationInterval := m.NotificationInterval
+		m.mu.RUnlock()
+
+		shouldNotifyApproaching := isApproaching && alwaysNotifyWhenApproaching
 
 		if shouldNotifyPeriodic || shouldNotifyApproaching {
 			var title string
@@ -666,7 +775,7 @@ func (m *Monitor) checkDeliveryTime() {
 			}
 
 			content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n通知原因: %s\n\n%s",
-				m.OrderID,
+				orderID,
 				currentEstimateTime,
 				strings.Join(notifyReasons, "、"),
 				m.getDetailedDeliveryInfo())
@@ -678,8 +787,8 @@ func (m *Monitor) checkDeliveryTime() {
 			// 添加定期通知的额外信息
 			if shouldNotifyPeriodic {
 				content += fmt.Sprintf("\n\n📅 通知间隔: 每%.0f小时\n⏰ 下次通知时间: %s",
-					m.NotificationInterval.Hours(),
-					time.Now().Add(m.NotificationInterval).Format(DateTimeShort))
+					notificationInterval.Hours(),
+					time.Now().Add(notificationInterval).Format(DateTimeShort))
 			}
 
 			if err := m.sendNotification(title, content); err != nil {
