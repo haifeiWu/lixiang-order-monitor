@@ -431,13 +431,12 @@ func (m *Monitor) loadConfig() error {
 
 	// 检查检查间隔是否变化
 	newCheckInterval := viper.GetString("check_interval")
-	if newCheckInterval != m.CheckInterval {
-		m.CheckInterval = newCheckInterval
-		// 如果 cron 已经启动，需要重新配置定时任务
-		if m.cron != nil {
-			return fmt.Errorf("检查间隔已变更，需要重启服务")
-		}
+	checkIntervalChanged := false
+	if newCheckInterval != m.CheckInterval && m.CheckInterval != "" {
+		// 只有在非首次加载且间隔发生变化时才记录
+		checkIntervalChanged = true
 	}
+	m.CheckInterval = newCheckInterval
 
 	// 重新初始化通知器
 	var notifiers []Notifier
@@ -463,6 +462,12 @@ func (m *Monitor) loadConfig() error {
 	m.configVersion++
 
 	log.Printf("配置已加载，版本: %d", m.configVersion)
+
+	// 如果检查间隔变更且 cron 已经启动，返回错误提示需要重启
+	if checkIntervalChanged && m.cron != nil {
+		return fmt.Errorf("检查间隔已变更，需要重启服务")
+	}
+
 	return nil
 }
 
