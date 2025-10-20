@@ -12,6 +12,7 @@
 - ⏰ **智能交付提醒** - 临近预计交付时间时主动提醒
 - 🔥 **配置热加载** - 修改配置文件后自动生效，无需重启服务
 - 🍪 **Cookie 失效自动检测** - 智能检测并告警 Cookie 失效
+- ⏳ **Cookie 过期预警** - 提前 48 小时提醒 Cookie 即将过期
 - 🔗 支持多种通知方式：
   - 微信群机器人
   - ServerChan（Server酱）微信推送
@@ -76,11 +77,24 @@ serverchan_baseurl: "https://sctapi.ftqq.com/"
 
 # 理想汽车请求的 Cookies (必填)
 lixiang_cookies: "你的完整Cookie字符串"
+
+# Cookie 过期管理 (可选，但强烈建议配置)
+cookie_valid_days: 7                     # Cookie 有效期，默认 7 天
+cookie_updated_at: "2025-10-20 10:00:00" # Cookie 最后更新时间
 ```
 
 **注意**: 至少需要配置一种通知方式（微信群机器人或 ServerChan），否则程序只会记录日志不会发送通知。
 
-### 5. 配置锁单时间
+### 5. 配置 Cookie 过期管理（推荐）
+
+为了及时发现 Cookie 过期问题，建议配置 Cookie 过期管理：
+
+- `cookie_valid_days`: Cookie 有效期（天），默认 7 天。根据实际情况调整
+- `cookie_updated_at`: Cookie 最后更新时间，每次更新 Cookie 后请务必更新此字段
+
+**系统会在 Cookie 过期前 48 小时自动发送提醒通知**，通知内容包括详细的更新步骤。
+
+### 6. 配置锁单时间
 
 程序支持基于锁单时间的交付预测功能：
 

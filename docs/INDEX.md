@@ -27,6 +27,7 @@
 | 文档 | 内容 | 难度 |
 |------|------|------|
 | [COOKIE_QUICK_FIX.md](./guides/COOKIE_QUICK_FIX.md) | 🔥 Cookie 失效快速修复（5分钟） | ⭐️ 简单 |
+| [COOKIE_EXPIRATION_DEMO.md](./guides/COOKIE_EXPIRATION_DEMO.md) | 🆕 Cookie 过期预警功能演示 | ⭐️ 简单 |
 | [HOT_RELOAD_DEMO.md](./guides/HOT_RELOAD_DEMO.md) | 配置热加载使用示例 | ⭐️⭐️ 中等 |
 | [TESTING_GUIDE.md](./guides/TESTING_GUIDE.md) | 完整的功能测试指南 | ⭐️⭐️ 中等 |
 
@@ -40,6 +41,8 @@
 |------|------|----------|
 | [CONFIG_HOT_RELOAD.md](./technical/CONFIG_HOT_RELOAD.md) | 配置热加载技术实现 | 开发者 |
 | [COOKIE_MANAGEMENT.md](./technical/COOKIE_MANAGEMENT.md) | Cookie 管理和失效检测机制 | 开发者 |
+| [COOKIE_EXPIRATION_WARNING.md](./technical/COOKIE_EXPIRATION_WARNING.md) | 🆕 Cookie 过期预警功能 | 所有用户 |
+| [COOKIE_AUTO_RENEWAL_ANALYSIS.md](./technical/COOKIE_AUTO_RENEWAL_ANALYSIS.md) | Cookie 自动续期可行性分析 | 开发者 |
 | [PERIODIC_NOTIFICATION.md](./technical/PERIODIC_NOTIFICATION.md) | 定期通知功能说明 | 开发者 |
 | [DELIVERY_OPTIMIZATION.md](./technical/DELIVERY_OPTIMIZATION.md) | 交付时间预测和优化 | 开发者 |
 
@@ -49,6 +52,7 @@
 |------|------|----------|
 | [IMPLEMENTATION_SUMMARY.md](./technical/IMPLEMENTATION_SUMMARY.md) | 热加载功能实现总结 | 开发者 |
 | [COOKIE_IMPLEMENTATION_SUMMARY.md](./technical/COOKIE_IMPLEMENTATION_SUMMARY.md) | Cookie 功能实现总结 | 开发者 |
+| [COOKIE_EXPIRATION_IMPLEMENTATION.md](./technical/COOKIE_EXPIRATION_IMPLEMENTATION.md) | 🆕 Cookie 过期预警实现总结 | 开发者 |
 | [PROJECT_FILES.md](./technical/PROJECT_FILES.md) | 项目文件说明 | 开发者 |
 
 ---
@@ -59,6 +63,7 @@
 |------|------|------|
 | `test-notification.sh` | 测试通知功能 | 验证 ServerChan/微信通知 |
 | `test-cookie-expiry.sh` | 测试 Cookie 失效检测 | 验证 Cookie 管理功能 |
+| `test-cookie-expiration.sh` | 🆕 测试 Cookie 过期预警 | 验证过期预警功能 |
 | `test-hot-reload.sh` | 测试配置热加载 | 验证配置自动重载 |
 | `test-periodic-notification.sh` | 测试定期通知 | 验证定期通知功能 |
 | `test_delivery_calc.go` | 测试交付时间计算 | 单元测试 |
@@ -71,6 +76,7 @@ cd scripts/test/
 # 运行测试
 ./test-notification.sh
 ./test-cookie-expiry.sh
+./test-cookie-expiration.sh  # 新增
 ./test-hot-reload.sh
 ```
 

@@ -92,6 +92,9 @@ type Monitor struct {
 	LastCookieCheckTime      time.Time // 上次 Cookie 检查时间
 	CookieExpiredNotified    bool      // 是否已通知 Cookie 失效
 	ConsecutiveCookieFailure int       // 连续 Cookie 失效次数
+	CookieUpdatedAt          time.Time // Cookie 更新时间
+	CookieValidDays          int       // Cookie 有效天数
+	CookieExpirationWarned   bool      // 是否已发送过期预警
 
 	// 配置热加载相关
 	mu            sync.RWMutex // 读写锁，保护配置的并发访问
@@ -444,6 +447,25 @@ func (m *Monitor) loadConfig() error {
 	m.NotificationInterval = time.Duration(viper.GetInt("notification_interval_hours")) * time.Hour
 	m.AlwaysNotifyWhenApproaching = viper.GetBool("always_notify_when_approaching")
 
+	// Cookie 过期管理配置
+	m.CookieValidDays = viper.GetInt("cookie_valid_days")
+	if m.CookieValidDays == 0 {
+		m.CookieValidDays = 7 // 默认 7 天
+	}
+
+	// 如果配置中有 cookie_updated_at，则使用；否则使用当前时间
+	cookieUpdatedStr := viper.GetString("cookie_updated_at")
+	if cookieUpdatedStr != "" {
+		if parsedTime, err := time.Parse(DateTimeFormat, cookieUpdatedStr); err == nil {
+			m.CookieUpdatedAt = parsedTime
+		} else {
+			m.CookieUpdatedAt = time.Now()
+		}
+	} else if m.CookieUpdatedAt.IsZero() {
+		// 首次启动，使用当前时间
+		m.CookieUpdatedAt = time.Now()
+	}
+
 	// 检查检查间隔是否变化
 	newCheckInterval := viper.GetString("check_interval")
 	checkIntervalChanged := false
@@ -671,6 +693,114 @@ func (m *Monitor) fetchOrderData() (*OrderResponse, error) {
 	m.mu.Unlock()
 
 	return &orderResp, nil
+}
+
+// checkCookieExpiration 检查 Cookie 是否即将过期
+func (m *Monitor) checkCookieExpiration() {
+	m.mu.RLock()
+	cookieValidDays := m.CookieValidDays
+	cookieUpdatedAt := m.CookieUpdatedAt
+	alreadyWarned := m.CookieExpirationWarned
+	m.mu.RUnlock()
+
+	if cookieValidDays == 0 {
+		return // 未配置有效期，跳过检查
+	}
+
+	// 计算 Cookie 年龄和剩余时间
+	cookieAge := time.Since(cookieUpdatedAt)
+	expireTime := cookieUpdatedAt.Add(time.Duration(cookieValidDays) * 24 * time.Hour)
+	remaining := time.Until(expireTime)
+
+	// 提前 2 天开始预警（48 小时）
+	warningThreshold := 48 * time.Hour
+
+	if remaining > 0 && remaining < warningThreshold && !alreadyWarned {
+		// 计算剩余天数和小时数
+		remainingDays := int(remaining.Hours() / 24)
+		remainingHours := int(remaining.Hours()) % 24
+
+		var timeDesc string
+		if remainingDays > 0 {
+			timeDesc = fmt.Sprintf("%d 天 %d 小时", remainingDays, remainingHours)
+		} else {
+			timeDesc = fmt.Sprintf("%d 小时", remainingHours)
+		}
+
+		title := "⏰ Cookie 即将过期提醒"
+		content := fmt.Sprintf(`您的理想汽车订单监控 Cookie 即将过期！
+
+**过期预警：**
+- 剩余有效时间：%s
+- 预计过期时间：%s
+- 上次更新时间：%s
+- Cookie 使用天数：%.1f 天
+
+**为避免监控服务中断，请及时更新 Cookie**
+
+**更新方法（5 分钟完成）：**
+1. 访问 https://www.lixiang.com/ 并登录
+2. 按 F12 打开开发者工具
+3. 切换到 Network (网络) 标签
+4. 刷新页面 (F5)
+5. 点击任意 API 请求
+6. 复制 Request Headers 中的 Cookie 值
+7. 更新 config.yaml 中的 lixiang_cookies 字段
+8. 保存文件（自动生效，无需重启）
+
+**快速指南**：
+查看 docs/guides/COOKIE_QUICK_FIX.md 获取详细图文教程
+
+**提示**：
+更新 Cookie 后，系统会自动记录更新时间并重置有效期。`,
+			timeDesc,
+			expireTime.Format(DateTimeFormat),
+			cookieUpdatedAt.Format(DateTimeFormat),
+			cookieAge.Hours()/24,
+		)
+
+		if err := m.sendNotification(title, content); err != nil {
+			log.Printf("Cookie 过期预警通知发送失败: %v", err)
+		} else {
+			m.mu.Lock()
+			m.CookieExpirationWarned = true
+			m.mu.Unlock()
+			log.Printf("✅ Cookie 过期预警通知已发送（剩余: %s）", timeDesc)
+		}
+	} else if remaining < 0 {
+		// Cookie 已过期
+		if !alreadyWarned {
+			log.Printf("⚠️  Cookie 已过期 %s", time.Since(expireTime))
+		}
+	} else if remaining > warningThreshold && alreadyWarned {
+		// Cookie 已更新，重置预警状态
+		m.mu.Lock()
+		m.CookieExpirationWarned = false
+		m.mu.Unlock()
+	}
+}
+
+// getCookieStatus 获取 Cookie 状态信息
+func (m *Monitor) getCookieStatus() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.CookieValidDays == 0 {
+		return "未配置过期检测"
+	}
+
+	expireTime := m.CookieUpdatedAt.Add(time.Duration(m.CookieValidDays) * 24 * time.Hour)
+	remaining := time.Until(expireTime)
+
+	if remaining < 0 {
+		return fmt.Sprintf("❌ 已过期 %s", time.Since(expireTime).Round(time.Hour))
+	} else if remaining < 24*time.Hour {
+		return fmt.Sprintf("⚠️  即将过期（剩余 %d 小时）", int(remaining.Hours()))
+	} else if remaining < 48*time.Hour {
+		return fmt.Sprintf("⚠️  即将过期（剩余 %.1f 天）", remaining.Hours()/24)
+	} else {
+		return fmt.Sprintf("🟢 正常（剩余 %.1f 天）", remaining.Hours()/24)
+	}
 }
 
 // handleCookieExpired 处理 Cookie 失效的情况
@@ -914,10 +1044,23 @@ func (m *Monitor) Start() error {
 	// 立即执行一次检查
 	m.checkDeliveryTime()
 
-	// 添加定时任务
+	// 立即检查 Cookie 过期状态并显示状态
+	log.Printf("Cookie 状态: %s", m.getCookieStatus())
+	m.checkCookieExpiration()
+
+	// 添加定时任务 - 订单检查
 	_, err := m.cron.AddFunc(m.CheckInterval, m.checkDeliveryTime)
 	if err != nil {
 		return fmt.Errorf("添加定时任务失败: %v", err)
+	}
+
+	// 添加定时任务 - 每日检查 Cookie 过期（凌晨 1 点）
+	_, err = m.cron.AddFunc("0 1 * * *", func() {
+		log.Printf("执行定期 Cookie 过期检查")
+		m.checkCookieExpiration()
+	})
+	if err != nil {
+		log.Printf("警告: 添加 Cookie 过期检查任务失败: %v", err)
 	}
 
 	m.cron.Start()

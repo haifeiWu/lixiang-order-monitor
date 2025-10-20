@@ -35,3 +35,11 @@ serverchan_baseurl: "https://sctapi.ftqq.com/"
 # 请从浏览器开发者工具中复制完整的 Cookie 字符串
 # 获取方法请参考 README.md
 lixiang_cookies: ""
+
+# Cookie 过期管理 (可选)
+# Cookie 有效期（天），默认 7 天
+cookie_valid_days: 7
+# Cookie 最后更新时间，格式: "2006-01-02 15:04:05"
+# 如果不填写，将使用首次启动时间
+# 更新 Cookie 后请务必更新此时间，以便系统正确计算过期时间
+cookie_updated_at: "2025-10-20 10:00:00"

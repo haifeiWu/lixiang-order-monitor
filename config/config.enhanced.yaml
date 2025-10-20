@@ -15,6 +15,10 @@ always_notify_when_approaching: true    # 临近交付时是否总是通知
 # 理想汽车API配置
 lixiang_cookies: ""                      # 从浏览器复制的Cookie字符串
 
+# Cookie 过期管理配置
+cookie_valid_days: 7                     # Cookie 有效期（天）
+cookie_updated_at: "2025-10-20 10:00:00" # Cookie 最后更新时间
+
 # 通知渠道配置 (至少配置一个)
 serverchan_sendkey: ""                   # Server酱SendKey
 serverchan_baseurl: "https://sctapi.ftqq.com/"
@@ -33,14 +37,21 @@ estimate_weeks_max: 9                   # 预计交付最多周数
 #    - notification_interval_hours: 设置通知间隔，建议12-48小时
 #    - always_notify_when_approaching: 临近交付时间是否强制通知
 #
-# 2. 通知触发条件:
+# 2. Cookie 过期管理:
+#    - cookie_valid_days: Cookie 有效期，默认 7 天
+#    - cookie_updated_at: Cookie 最后更新时间，更新 Cookie 后请务必更新此字段
+#    - 系统会在 Cookie 过期前 48 小时发送提醒通知
+#
+# 3. 通知触发条件:
 #    - 交付时间有变化时立即通知
 #    - 达到定期通知间隔时发送状态报告
 #    - 临近交付时间时发送提醒（可配置）
+#    - Cookie 即将过期时发送预警（提前 48 小时）
 #    - 初次启动时发送初始状态
 #
-# 3. 通知内容增强:
+# 4. 通知内容增强:
 #    - 详细的交付状态分析
 #    - 基于当前时间的进度计算
 #    - 智能的状态判断和建议
 #    - 倒计时和时间状态信息
+#    - Cookie 状态监控和过期提醒
