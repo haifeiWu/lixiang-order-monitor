@@ -2,13 +2,16 @@
 
 这是一个用 Go 语言编写的监控工具，用于监控理想汽车订单的预计交付时间变化，并在变化时通过微信机器人发送通知。
 
+> 📖 **完整架构文档**: 查看 [ARCHITECTURE.md](./ARCHITECTURE.md) 了解详细的系统架构和技术实现
+
 ## 功能特性
 
 - 🔍 定时监控理想汽车订单的预计交付时间
 - 📱 交付时间变化时自动发送通知
-- 📈 **基于锁单时间的交付日期预测** (新功能)
+- 📈 **基于锁单时间的交付日期预测**
 - ⏰ **智能交付提醒** - 临近预计交付时间时主动提醒
 - 🔥 **配置热加载** - 修改配置文件后自动生效，无需重启服务
+- 🍪 **Cookie 失效自动检测** - 智能检测并告警 Cookie 失效
 - 🔗 支持多种通知方式：
   - 微信群机器人
   - ServerChan（Server酱）微信推送
@@ -17,6 +20,25 @@
 - 🛡️ 错误处理和重试机制
 - 🎯 支持同时向多个通道发送通知
 - 🔒 线程安全的配置管理
+
+## 📁 项目结构
+
+```
+lixiang-order-monitor/
+├── docs/                    # 📚 文档目录
+│   ├── guides/             # 用户指南
+│   └── technical/          # 技术文档
+├── scripts/                # 🔧 脚本目录
+│   ├── test/              # 测试脚本
+│   └── deploy/            # 部署脚本
+├── config/                 # ⚙️ 配置模板
+├── main.go                 # 主程序
+├── config.yaml            # 工作配置
+├── README.md              # 项目说明
+└── ARCHITECTURE.md        # 架构文档
+```
+
+详细目录结构请查看 [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ## 安装和配置
 
@@ -103,13 +125,14 @@ lixiang_cookies: "你的完整Cookie字符串"
 
 ```bash
 # 测试通知配置
-./test-notification.sh
+./scripts/test/test-notification.sh
 ```
 
 这个脚本会向所有配置的通知渠道发送测试消息，确保通知功能正常工作。
 
 ### 运行程序
 
+**开发环境**:
 ```bash
 # 直接运行
 go run main.go
@@ -117,6 +140,21 @@ go run main.go
 # 或者编译后运行
 go build -o lixiang-monitor
 ./lixiang-monitor
+```
+
+**生产环境** (推荐使用部署脚本):
+```bash
+# 构建程序
+./scripts/deploy/build.sh
+
+# 启动服务
+./scripts/deploy/start.sh
+
+# 查看状态
+./scripts/deploy/status.sh
+
+# 停止服务
+./scripts/deploy/stop.sh
 ```
 
 ### 后台运行
@@ -207,7 +245,7 @@ check_interval: "@every 1m"
 2. 保存文件后程序自动检测并加载新配置
 3. 查看日志确认配置是否成功加载
 
-**详细说明请参考：** [CONFIG_HOT_RELOAD.md](./CONFIG_HOT_RELOAD.md)
+**详细说明请参考：** [docs/technical/CONFIG_HOT_RELOAD.md](./docs/technical/CONFIG_HOT_RELOAD.md)
 
 ## 注意事项
 
@@ -217,13 +255,89 @@ check_interval: "@every 1m"
 4. **网络稳定性**：确保运行环境有稳定的网络连接
 5. **配置备份**：修改配置前建议先备份当前配置文件
 
-## 相关文档
+## Cookie 管理 🍪
 
-- [配置热加载详细说明](./CONFIG_HOT_RELOAD.md) - 配置热加载功能详细文档
-- [微信通知配置](./WECHAT_SETUP.md) - 微信群机器人配置指南
-- [ServerChan 配置](./SERVERCHAN_SETUP.md) - Server酱配置指南
-- [定期通知说明](./PERIODIC_NOTIFICATION.md) - 定期通知功能说明
+本系统内置了智能 Cookie 失效检测和处理机制：
 
-## 许可证
+### 自动检测 Cookie 失效
+
+- ✅ 自动检测 HTTP 401/403 状态码
+- ✅ 检测理想汽车 API 业务错误码
+- ✅ 连续失败 3 次后自动发送告警通知
+- ✅ 告警消息包含详细的 Cookie 更新步骤
+
+### Cookie 失效处理
+
+**收到 Cookie 失效告警时，请按以下步骤操作：**
+
+1. 访问 https://www.lixiang.com/ 并登录
+2. 按 F12 打开开发者工具
+3. 在 Network 标签中找到任意请求
+4. 复制 Request Headers 中的完整 Cookie 字符串
+5. 更新 `config.yaml` 中的 `lixiang_cookies` 字段
+6. 保存文件（配置会自动热加载，无需重启）
+
+**快速参考：**
+- 📖 [Cookie 失效快速修复指南](./docs/guides/COOKIE_QUICK_FIX.md) - 5 分钟快速解决
+- 📚 [Cookie 管理完整文档](./docs/technical/COOKIE_MANAGEMENT.md) - 详细技术说明
+
+**测试 Cookie 功能：**
+```bash
+# 运行 Cookie 失效检测测试
+./scripts/test/test-cookie-expiry.sh
+```
+
+### 关键 Cookie 字段
+
+| 字段 | 说明 | 重要性 |
+|------|------|--------|
+| `X-LX-Token` | 会话令牌 | ⭐⭐⭐ (最易失效) |
+| `authli_device_id` | 设备标识 | ⭐⭐⭐ |
+| `X-LX-Deviceid` | 设备 ID | ⭐⭐ |
+
+## 📚 相关文档
+
+### 📖 项目架构
+- [ARCHITECTURE.md](./ARCHITECTURE.md) - **完整的系统架构文档**
+
+### 📘 用户指南 (docs/guides/)
+- [Cookie 失效快速修复](./docs/guides/COOKIE_QUICK_FIX.md) - 🔥 5 分钟快速解决 Cookie 失效问题
+- [微信通知配置](./docs/guides/WECHAT_SETUP.md) - 微信群机器人配置指南
+- [ServerChan 配置](./docs/guides/SERVERCHAN_SETUP.md) - Server酱配置指南
+- [配置热加载示例](./docs/guides/HOT_RELOAD_DEMO.md) - 配置热加载使用示例
+- [测试指南](./docs/guides/TESTING_GUIDE.md) - 完整的测试指南
+
+### 🔬 技术文档 (docs/technical/)
+- [配置热加载技术文档](./docs/technical/CONFIG_HOT_RELOAD.md) - 配置热加载功能详细实现
+- [Cookie 管理技术文档](./docs/technical/COOKIE_MANAGEMENT.md) - Cookie 失效检测和处理机制详解
+- [Cookie 实现总结](./docs/technical/COOKIE_IMPLEMENTATION_SUMMARY.md) - Cookie 功能实现总结
+- [热加载实现总结](./docs/technical/IMPLEMENTATION_SUMMARY.md) - 热加载实现总结
+- [定期通知功能](./docs/technical/PERIODIC_NOTIFICATION.md) - 定期通知功能说明
+- [交付时间优化](./docs/technical/DELIVERY_OPTIMIZATION.md) - 交付时间优化文档
+
+### 🔧 脚本工具
+- **测试脚本** (scripts/test/):
+  - `test-notification.sh` - 通知功能测试
+  - `test-cookie-expiry.sh` - Cookie 失效测试
+  - `test-hot-reload.sh` - 配置热加载测试
+  - `test-periodic-notification.sh` - 定期通知测试
+
+- **部署脚本** (scripts/deploy/):
+  - `build.sh` - 构建脚本
+  - `start.sh` - 启动脚本
+  - `stop.sh` - 停止脚本
+  - `status.sh` - 状态查询脚本
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+请遵循项目的目录结构规范：
+- 用户指南放在 `docs/guides/`
+- 技术文档放在 `docs/technical/`
+- 测试脚本放在 `scripts/test/`
+- 部署脚本放在 `scripts/deploy/`
+
+## 📄 许可证
 
 MIT License

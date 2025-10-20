@@ -36,6 +36,16 @@ type OrderResponse struct {
 	} `json:"data"`
 }
 
+// Cookie 失效错误类型
+type CookieExpiredError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *CookieExpiredError) Error() string {
+	return fmt.Sprintf("Cookie 已失效 (状态码: %d): %s", e.StatusCode, e.Message)
+}
+
 // 微信机器人消息结构
 type WeChatMessage struct {
 	MsgType string `json:"msgtype"`
@@ -77,6 +87,11 @@ type Monitor struct {
 	NotificationInterval        time.Duration // 通知间隔（当交付时间未更新时）
 	EnablePeriodicNotify        bool          // 是否启用定期通知
 	AlwaysNotifyWhenApproaching bool          // 临近交付时总是通知
+
+	// Cookie 管理相关
+	LastCookieCheckTime      time.Time // 上次 Cookie 检查时间
+	CookieExpiredNotified    bool      // 是否已通知 Cookie 失效
+	ConsecutiveCookieFailure int       // 连续 Cookie 失效次数
 
 	// 配置热加载相关
 	mu            sync.RWMutex // 读写锁，保护配置的并发访问
@@ -616,6 +631,15 @@ func (m *Monitor) fetchOrderData() (*OrderResponse, error) {
 		return nil, fmt.Errorf("读取响应失败: %v", err)
 	}
 
+	// 检测 Cookie 失效的常见状态码
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		m.handleCookieExpired(resp.StatusCode, string(body))
+		return nil, &CookieExpiredError{
+			StatusCode: resp.StatusCode,
+			Message:    string(body),
+		}
+	}
+
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("API 返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
 	}
@@ -625,7 +649,77 @@ func (m *Monitor) fetchOrderData() (*OrderResponse, error) {
 		return nil, fmt.Errorf("解析 JSON 失败: %v", err)
 	}
 
+	// 检查业务层错误码（理想汽车可能返回 200 但 code != 0）
+	if orderResp.Code != 0 {
+		// 常见的认证失败错误码
+		if orderResp.Code == 401 || orderResp.Code == 403 ||
+			orderResp.Code == 10001 || orderResp.Code == 10002 {
+			m.handleCookieExpired(orderResp.Code, orderResp.Message)
+			return nil, &CookieExpiredError{
+				StatusCode: orderResp.Code,
+				Message:    orderResp.Message,
+			}
+		}
+		return nil, fmt.Errorf("API 返回业务错误: code=%d, message=%s", orderResp.Code, orderResp.Message)
+	}
+
+	// 请求成功，重置失败计数器
+	m.mu.Lock()
+	m.ConsecutiveCookieFailure = 0
+	m.CookieExpiredNotified = false
+	m.LastCookieCheckTime = time.Now()
+	m.mu.Unlock()
+
 	return &orderResp, nil
+}
+
+// handleCookieExpired 处理 Cookie 失效的情况
+func (m *Monitor) handleCookieExpired(statusCode int, message string) {
+	m.mu.Lock()
+	m.ConsecutiveCookieFailure++
+	failureCount := m.ConsecutiveCookieFailure
+	alreadyNotified := m.CookieExpiredNotified
+	m.mu.Unlock()
+
+	log.Printf("⚠️  Cookie 验证失败 (状态码: %d, 连续失败: %d 次): %s", statusCode, failureCount, message)
+
+	// 连续失败 3 次且未通知过，则发送告警
+	if failureCount >= 3 && !alreadyNotified {
+		title := "🚨 理想汽车 Cookie 已失效"
+		content := fmt.Sprintf(`您的理想汽车订单监控 Cookie 已失效，请及时更新！
+
+**失效详情：**
+- 状态码：%d
+- 错误信息：%s
+- 连续失败次数：%d 次
+- 检测时间：%s
+
+**Cookie 更新步骤：**
+1. 打开浏览器访问 https://www.lixiang.com/
+2. 登录您的理想汽车账号
+3. 按 F12 打开开发者工具
+4. 切换到 Network 标签
+5. 刷新页面，找到任意请求
+6. 在请求头中复制完整的 Cookie 字符串
+7. 更新 config.yaml 中的 lixiang_cookies 字段
+
+**关键 Cookie 字段说明：**
+- X-LX-Token: 会话令牌（必需，定期过期）
+- authli_device_id: 设备标识（必需）
+- X-LX-Deviceid: 设备 ID（必需）
+
+程序将继续运行，但无法获取订单数据，直到 Cookie 更新。`,
+			statusCode, message, failureCount, time.Now().Format(DateTimeFormat))
+
+		if err := m.sendNotification(title, content); err != nil {
+			log.Printf("Cookie 失效通知发送失败: %v", err)
+		} else {
+			m.mu.Lock()
+			m.CookieExpiredNotified = true
+			m.mu.Unlock()
+			log.Println("✅ Cookie 失效通知已发送")
+		}
+	}
 }
 
 func (m *Monitor) sendNotification(title, content string) error {
@@ -665,6 +759,11 @@ func (m *Monitor) checkDeliveryTime() {
 
 	orderData, err := m.fetchOrderData()
 	if err != nil {
+		// 检查是否是 Cookie 失效错误
+		if _, isCookieError := err.(*CookieExpiredError); isCookieError {
+			log.Printf("⚠️  Cookie 已失效，跳过本次检查: %v", err)
+			return
+		}
 		log.Printf("获取订单数据失败: %v", err)
 		return
 	}
