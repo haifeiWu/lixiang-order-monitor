@@ -1055,7 +1055,7 @@ func (m *Monitor) Start() error {
 	}
 
 	// 添加定时任务 - 每日检查 Cookie 过期（凌晨 1 点）
-	_, err = m.cron.AddFunc("0 1 * * *", func() {
+	_, err = m.cron.AddFunc("0 0 1 * * *", func() {
 		log.Printf("执行定期 Cookie 过期检查")
 		m.checkCookieExpiration()
 	})
