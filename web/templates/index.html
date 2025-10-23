@@ -299,6 +299,9 @@
     </div>
     
     <script>
+        // API 基础路径
+        const basePath = '{{.BasePath}}';
+        
         // 格式化日期时间
         function formatDateTime(dateStr) {
             const date = new Date(dateStr);
@@ -315,7 +318,7 @@
         // 加载统计数据
         async function loadStats() {
             try {
-                const response = await fetch('/api/stats');
+                const response = await fetch(`${basePath}/api/stats`);
                 const data = await response.json();
                 
                 const statsHtml = `
@@ -378,7 +381,7 @@
         // 加载时间变更记录
         async function loadTimeChanges() {
             try {
-                const response = await fetch('/api/time-changes?limit=10');
+                const response = await fetch(`${basePath}/api/time-changes?limit=10`);
                 const records = await response.json();
                 
                 const tbody = document.querySelector('#timeChangesTable tbody');
@@ -404,7 +407,7 @@
         // 加载历史记录
         async function loadRecords() {
             try {
-                const response = await fetch('/api/records?limit=20');
+                const response = await fetch(`${basePath}/api/records?limit=20`);
                 const records = await response.json();
                 
                 const tbody = document.querySelector('#recordsTable tbody');

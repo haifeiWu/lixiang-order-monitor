@@ -120,8 +120,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"OrderID": s.orderID,
-		"Title":   "理想汽车订单监控",
+		"OrderID":  s.orderID,
+		"Title":    "理想汽车订单监控",
+		"BasePath": s.basePath,
 	}
 
 	if err := s.templates.ExecuteTemplate(w, "index.html", data); err != nil {
