@@ -30,6 +30,10 @@ type Config struct {
 	// Cookie 管理
 	CookieUpdatedAt time.Time
 	CookieValidDays int
+
+	// Web 服务器
+	WebEnabled bool
+	WebPort    int
 }
 
 // Init 初始化配置系统
@@ -66,6 +70,8 @@ func setDefaults() {
 	viper.SetDefault("notification_interval_hours", 24)
 	viper.SetDefault("always_notify_when_approaching", true)
 	viper.SetDefault("cookie_valid_days", 7)
+	viper.SetDefault("web_enabled", true)
+	viper.SetDefault("web_port", 8080)
 }
 
 // Load 加载配置并返回 Config 结构
@@ -109,6 +115,13 @@ func Load() (*Config, error) {
 		}
 	} else {
 		cfg.CookieUpdatedAt = time.Now()
+	}
+
+	// Web 服务器配置
+	cfg.WebEnabled = viper.GetBool("web_enabled")
+	cfg.WebPort = viper.GetInt("web_port")
+	if cfg.WebPort == 0 {
+		cfg.WebPort = 8080
 	}
 
 	return cfg, nil

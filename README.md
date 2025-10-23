@@ -13,7 +13,9 @@
 - 🔥 **配置热加载** - 修改配置文件后自动生效，无需重启服务
 - 🍪 **Cookie 失效自动检测** - 智能检测并告警 Cookie 失效
 - ⏳ **Cookie 过期预警** - 提前 48 小时提醒 Cookie 即将过期
-- 🔗 支持多种通知方式：
+- 💾 **历史数据存储** - 使用 SQLite 数据库持久化保存所有监控记录
+- 🌐 **Web 可视化界面** - 提供美观的 Web 管理界面，实时查看监控状态
+- � 支持多种通知方式：
   - 微信群机器人
   - ServerChan（Server酱）微信推送
   - Bark 推送（iOS/macOS）
@@ -199,6 +201,96 @@ screen -S lixiang-monitor
 ./lixiang-monitor
 # 按 Ctrl+A+D 分离会话
 ```
+
+## 历史数据查询
+
+### 查看监控历史记录
+
+程序会自动将每次检查的结果保存到 SQLite 数据库中，可以使用以下方法查询历史记录：
+
+```bash
+# 使用提供的查询脚本
+./scripts/query-db.sh
+```
+
+输出示例：
+```
+📊 理想汽车订单监控 - 历史记录
+================================
+
+📈 记录统计
+--------------------------------
+总记录数: 25
+订单数: 1
+时间变更次数: 3
+通知发送次数: 12
+
+📋 最近 10 条记录
+--------------------------------
+id  order_id  estimate_time      check_time           approaching  changed  notified
+--  --------  ----------------   ------------------   -----------  -------  --------
+25  550919    预计6-8周内交付    2025-10-23 16:34     否           否       是
+```
+
+### 手动查询数据库
+
+如果你熟悉 SQL，可以直接查询数据库：
+
+```bash
+# 进入数据库
+sqlite3 lixiang-monitor.db
+
+# 查询所有记录
+SELECT * FROM delivery_records ORDER BY check_time DESC LIMIT 10;
+
+# 查询时间变更记录
+SELECT check_time, previous_estimate, estimate_time 
+FROM delivery_records 
+WHERE time_changed = 1;
+
+# 退出
+.quit
+```
+
+详细的数据库说明请参考：[DATABASE_STORAGE.md](./docs/technical/DATABASE_STORAGE.md)
+
+## Web 可视化界面
+
+### 访问界面
+
+启动程序后，打开浏览器访问：
+
+```
+http://localhost:8080
+```
+
+### 界面功能
+
+- **实时统计**: 查看总检查次数、时间变更次数、通知发送次数
+- **最新状态**: 显示当前预计交付时间、锁单时间、临近状态
+- **时间变更历史**: 追踪交付时间的历史变化
+- **检查记录**: 查看最近的所有检查记录
+- **自动刷新**: 每 30 秒自动更新数据
+
+### 配置
+
+在 `config.yaml` 中配置：
+
+```yaml
+# Web 管理界面配置
+web_enabled: true       # 是否启用 Web 界面
+web_port: 8080          # Web 服务器端口
+```
+
+### 特点
+
+- 🎨 美观的现代化界面设计
+- 📱 响应式布局，支持移动端
+- ⚡ 实时数据展示
+- 📊 直观的数据可视化
+- 🔄 自动刷新机制
+
+详细说明请参考：[WEB_INTERFACE.md](./docs/guides/WEB_INTERFACE.md)
 
 ## 配置说明
 

@@ -9,10 +9,12 @@ import (
 
 	"lixiang-monitor/cfg"
 	"lixiang-monitor/cookie"
+	"lixiang-monitor/db"
 	"lixiang-monitor/delivery"
 	"lixiang-monitor/notification"
 	"lixiang-monitor/notifier"
 	"lixiang-monitor/utils"
+	"lixiang-monitor/web"
 
 	"github.com/robfig/cron/v3"
 )
@@ -50,6 +52,12 @@ type Monitor struct {
 	deliveryInfo        *delivery.Info        // 交付信息管理器
 	cookieManager       *cookie.Manager       // Cookie 管理器
 	notificationHandler *notification.Handler // 通知处理器
+	database            *db.Database          // 数据库管理器
+	webServer           *web.Server           // Web 服务器
+
+	// Web 服务器配置
+	WebEnabled bool // 是否启用 Web 服务器
+	WebPort    int  // Web 服务器端口
 }
 
 // 加载或重新加载配置
@@ -81,6 +89,8 @@ func (m *Monitor) loadConfig() error {
 	m.AlwaysNotifyWhenApproaching = config.AlwaysNotifyWhenApproaching
 	m.Notifiers = config.Notifiers
 	m.CookieValidDays = config.CookieValidDays
+	m.WebEnabled = config.WebEnabled
+	m.WebPort = config.WebPort
 
 	// Cookie 更新时间处理
 	if !config.CookieUpdatedAt.IsZero() {
@@ -239,6 +249,26 @@ func NewMonitor() *Monitor {
 		monitor.AlwaysNotifyWhenApproaching,
 	)
 
+	// 初始化数据库
+	database, err := db.New("./lixiang-monitor.db")
+	if err != nil {
+		log.Printf("⚠️  数据库初始化失败: %v (历史记录功能将不可用)", err)
+	} else {
+		monitor.database = database
+		log.Println("✅ 数据库初始化成功")
+	}
+
+	// 初始化 Web 服务器
+	if monitor.WebEnabled && monitor.database != nil {
+		webServer, err := web.NewServer(monitor.database, monitor.OrderID, monitor.WebPort)
+		if err != nil {
+			log.Printf("⚠️  Web 服务器初始化失败: %v", err)
+		} else {
+			monitor.webServer = webServer
+			log.Println("✅ Web 服务器初始化成功")
+		}
+	}
+
 	// 启动配置文件监听
 	monitor.watchConfig()
 
@@ -297,16 +327,24 @@ func (m *Monitor) logDeliveryInfo(lockOrderTime time.Time, isApproaching bool, a
 
 // handleDeliveryNotification 处理交付通知逻辑
 func (m *Monitor) handleDeliveryNotification(orderID, currentEstimateTime, lastEstimateTime string, isApproaching bool, approachMsg string) {
+	timeChanged := false
+	notificationSent := false
+
 	if lastEstimateTime == "" {
 		// 首次检查
 		if err := m.notificationHandler.HandleFirstCheck(orderID, currentEstimateTime, isApproaching, approachMsg); err != nil {
 			log.Printf("处理首次检查通知失败: %v", err)
+		} else {
+			notificationSent = true
 		}
 		m.updateLastEstimateTime(currentEstimateTime)
 	} else if currentEstimateTime != lastEstimateTime {
 		// 时间发生变化
+		timeChanged = true
 		if err := m.notificationHandler.HandleTimeChanged(orderID, currentEstimateTime, lastEstimateTime, isApproaching, approachMsg); err != nil {
 			log.Printf("处理时间变更通知失败: %v", err)
+		} else {
+			notificationSent = true
 		}
 		m.updateLastEstimateTime(currentEstimateTime)
 	} else {
@@ -315,7 +353,12 @@ func (m *Monitor) handleDeliveryNotification(orderID, currentEstimateTime, lastE
 		if err := m.notificationHandler.HandlePeriodicNotification(orderID, currentEstimateTime, isApproaching, approachMsg); err != nil {
 			log.Printf("处理定期通知失败: %v", err)
 		}
+		// 定期通知也算作已发送通知
+		notificationSent = m.EnablePeriodicNotify
 	}
+
+	// 保存记录到数据库
+	m.saveDeliveryRecord(orderID, currentEstimateTime, lastEstimateTime, isApproaching, approachMsg, timeChanged, notificationSent)
 }
 
 // updateLastEstimateTime 更新最后的预估时间
@@ -323,6 +366,31 @@ func (m *Monitor) updateLastEstimateTime(estimateTime string) {
 	m.mu.Lock()
 	m.LastEstimateTime = estimateTime
 	m.mu.Unlock()
+}
+
+// saveDeliveryRecord 保存交付记录到数据库
+func (m *Monitor) saveDeliveryRecord(orderID, currentEstimateTime, previousEstimate string, isApproaching bool, approachMsg string, timeChanged, notificationSent bool) {
+	// 如果数据库未初始化，跳过保存
+	if m.database == nil {
+		return
+	}
+
+	record := &db.DeliveryRecord{
+		OrderID:          orderID,
+		EstimateTime:     currentEstimateTime,
+		LockOrderTime:    m.LockOrderTime,
+		CheckTime:        time.Now(),
+		IsApproaching:    isApproaching,
+		ApproachMessage:  approachMsg,
+		TimeChanged:      timeChanged,
+		PreviousEstimate: previousEstimate,
+		NotificationSent: notificationSent,
+		CreatedAt:        time.Now(),
+	}
+
+	if err := m.database.SaveDeliveryRecord(record); err != nil {
+		log.Printf("保存交付记录失败: %v", err)
+	}
 }
 
 func (m *Monitor) checkDeliveryTime() {
@@ -394,6 +462,14 @@ func (m *Monitor) Start() error {
 	}
 
 	m.cron.Start()
+
+	// 启动 Web 服务器
+	if m.webServer != nil {
+		if err := m.webServer.Start(); err != nil {
+			log.Printf("⚠️  Web 服务器启动失败: %v", err)
+		}
+	}
+
 	log.Println("监控服务已启动，等待定时检查...")
 
 	// 保持程序运行
@@ -403,6 +479,20 @@ func (m *Monitor) Start() error {
 func (m *Monitor) Stop() {
 	log.Println("停止监控服务...")
 	m.cron.Stop()
+
+	// 停止 Web 服务器
+	if m.webServer != nil {
+		if err := m.webServer.Stop(); err != nil {
+			log.Printf("关闭 Web 服务器失败: %v", err)
+		}
+	}
+
+	// 关闭数据库连接
+	if m.database != nil {
+		if err := m.database.Close(); err != nil {
+			log.Printf("关闭数据库连接失败: %v", err)
+		}
+	}
 }
 
 func main() {

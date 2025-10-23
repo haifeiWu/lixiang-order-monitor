@@ -11,6 +11,12 @@ lixiang-monitor.exe
 *.log
 monitor.log
 
+# 数据库文件
+*.db
+*.db-*
+lixiang-monitor.db
+lixiang-monitor.db.backup
+
 # Go 相关
 go.sum
 
