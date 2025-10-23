@@ -21,22 +21,34 @@ type Server struct {
 	database   *db.Database
 	orderID    string
 	port       int
+	basePath   string
 	httpServer *http.Server
 	templates  *template.Template
 }
 
 // NewServer 创建 Web 服务器实例
-func NewServer(database *db.Database, orderID string, port int) (*Server, error) {
+func NewServer(database *db.Database, orderID string, port int, basePath string) (*Server, error) {
 	// 解析模板
 	tmpl, err := template.ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("解析模板失败: %w", err)
 	}
 
+	// 规范化 basePath: 确保以 / 开头，不以 / 结尾
+	if basePath != "" {
+		if basePath[0] != '/' {
+			basePath = "/" + basePath
+		}
+		if basePath[len(basePath)-1] == '/' && len(basePath) > 1 {
+			basePath = basePath[:len(basePath)-1]
+		}
+	}
+
 	server := &Server{
 		database:  database,
 		orderID:   orderID,
 		port:      port,
+		basePath:  basePath,
 		templates: tmpl,
 	}
 
@@ -47,11 +59,11 @@ func NewServer(database *db.Database, orderID string, port int) (*Server, error)
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 
-	// 注册路由
-	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/api/stats", s.handleStats)
-	mux.HandleFunc("/api/records", s.handleRecords)
-	mux.HandleFunc("/api/time-changes", s.handleTimeChanges)
+	// 注册路由（根据 basePath 配置）
+	mux.HandleFunc(s.route("/"), s.handleIndex)
+	mux.HandleFunc(s.route("/api/stats"), s.handleStats)
+	mux.HandleFunc(s.route("/api/records"), s.handleRecords)
+	mux.HandleFunc(s.route("/api/time-changes"), s.handleTimeChanges)
 
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.port),
@@ -60,7 +72,8 @@ func (s *Server) Start() error {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	log.Printf("[Web] 启动 Web 服务器: http://localhost:%d", s.port)
+	baseURL := fmt.Sprintf("http://localhost:%d%s", s.port, s.basePath)
+	log.Printf("[Web] 启动 Web 服务器: %s", baseURL)
 
 	go func() {
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -78,6 +91,14 @@ func (s *Server) Stop() error {
 		return s.httpServer.Close()
 	}
 	return nil
+}
+
+// route 根据 basePath 构建完整路由
+func (s *Server) route(path string) string {
+	if s.basePath == "" {
+		return path
+	}
+	return s.basePath + path
 }
 
 // logMiddleware 日志中间件

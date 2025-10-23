@@ -32,8 +32,9 @@ type Config struct {
 	CookieValidDays int
 
 	// Web 服务器
-	WebEnabled bool
-	WebPort    int
+	WebEnabled  bool
+	WebPort     int
+	WebBasePath string
 }
 
 // Init 初始化配置系统
@@ -72,6 +73,7 @@ func setDefaults() {
 	viper.SetDefault("cookie_valid_days", 7)
 	viper.SetDefault("web_enabled", true)
 	viper.SetDefault("web_port", 8080)
+	viper.SetDefault("web_base_path", "")
 }
 
 // Load 加载配置并返回 Config 结构
@@ -123,6 +125,7 @@ func Load() (*Config, error) {
 	if cfg.WebPort == 0 {
 		cfg.WebPort = 8080
 	}
+	cfg.WebBasePath = viper.GetString("web_base_path")
 
 	return cfg, nil
 }

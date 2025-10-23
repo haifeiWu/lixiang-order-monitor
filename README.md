@@ -2,7 +2,8 @@
 
 这是一个用 Go 语言编写的监控工具，用于监控理想汽车订单的预计交付时间变化，并在变化时通过微信机器人发送通知。
 
-> 📖 **完整架构文档**: 查看 [ARCHITECTURE.md](./ARCHITECTURE.md) 了解详细的系统架构和技术实现
+> � **新用户必看**: [📋 文档快速参考](./docs/QUICK_REFERENCE.md) - 可视化导航，快速找到你需要的文档！  
+> �📖 **完整架构文档**: 查看 [ARCHITECTURE.md](./ARCHITECTURE.md) 了解详细的系统架构和技术实现
 
 ## 功能特性
 
@@ -280,7 +281,28 @@ http://localhost:8080
 # Web 管理界面配置
 web_enabled: true       # 是否启用 Web 界面
 web_port: 8080          # Web 服务器端口
+web_base_path: ""       # Web 服务器根路由 (例如: "/monitor" 则访问 http://localhost:8080/monitor)
 ```
+
+### 根路由配置
+
+支持配置自定义根路由，适用于反向代理、多服务集成等场景：
+
+```yaml
+# 默认配置（无根路由）
+web_base_path: ""
+# 访问: http://localhost:8080/
+
+# 自定义根路由
+web_base_path: "/monitor"
+# 访问: http://localhost:8080/monitor/
+
+# 多级路径
+web_base_path: "/apps/lixiang"
+# 访问: http://localhost:8080/apps/lixiang/
+```
+
+详细说明请参考：[Web 根路由配置指南](docs/guides/WEB_BASE_PATH.md)
 
 ### 特点
 
@@ -420,23 +442,60 @@ check_interval: "@every 1m"
 
 ## 📚 相关文档
 
-### 📖 项目架构
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - **完整的系统架构文档**
+> 💡 **快速开始**: 不知道看哪个文档？试试 [📋 文档快速参考](./docs/QUICK_REFERENCE.md) - 可视化导航，一目了然！
+
+### 📑 文档导航
+- [� 文档快速参考](./docs/QUICK_REFERENCE.md) - **⭐ 可视化文档导航，按场景快速查找**
+- [�📖 文档索引](./docs/INDEX.md) - 完整的文档目录和详细导航
+
+### 🏗️ 架构设计 (docs/architecture/)
+- [系统架构文档](./docs/architecture/ARCHITECTURE.md) - 完整的系统架构设计
+- [重构总结报告](./docs/architecture/REFACTORING_FINAL_REPORT.md) - 重构历程和经验总结
+- [项目重组文档](./docs/architecture/PROJECT_REORGANIZATION.md) - 项目结构优化
+
+### � 变更日志 (docs/changelogs/)
+- [Bark 推送功能 (v1.3.0)](./docs/changelogs/BARK_FEATURE_CHANGELOG.md) - iOS Bark 推送通知
+- [Cookie 过期管理 (v1.4.0)](./docs/changelogs/COOKIE_EXPIRATION_CHANGELOG.md) - Cookie 生命周期管理
+- [数据库存储 (v1.7.0)](./docs/changelogs/DATABASE_FEATURE_CHANGELOG.md) - SQLite 历史记录
+- [Web 可视化界面 (v1.8.0)](./docs/changelogs/WEB_INTERFACE_CHANGELOG.md) - Web 管理界面
+- [Web 根路由配置 (v1.9.0)](./docs/changelogs/WEB_BASE_PATH_CHANGELOG.md) - 自定义根路由
 
 ### 📘 用户指南 (docs/guides/)
-- [Cookie 失效快速修复](./docs/guides/COOKIE_QUICK_FIX.md) - 🔥 5 分钟快速解决 Cookie 失效问题
-- [微信通知配置](./docs/guides/WECHAT_SETUP.md) - 微信群机器人配置指南
+**通知配置**:
+- [微信通知配置](./docs/guides/WECHAT_SETUP.md) - 企业微信群机器人配置
+- [Bark 推送配置](./docs/guides/BARK_SETUP.md) - iOS Bark 推送设置
 - [ServerChan 配置](./docs/guides/SERVERCHAN_SETUP.md) - Server酱配置指南
+
+**Web 界面**:
+- [Web 界面使用指南](./docs/guides/WEB_INTERFACE.md) - Web 可视化界面完整指南
+- [Web 根路由配置](./docs/guides/WEB_BASE_PATH.md) - 自定义根路由设置
+
+**高级功能**:
+- [Cookie 失效快速修复](./docs/guides/COOKIE_QUICK_FIX.md) - 🔥 5分钟快速处理Cookie失效
+- [Cookie 过期演示](./docs/guides/COOKIE_EXPIRATION_DEMO.md) - Cookie 管理功能演示
 - [配置热加载示例](./docs/guides/HOT_RELOAD_DEMO.md) - 配置热加载使用示例
-- [测试指南](./docs/guides/TESTING_GUIDE.md) - 完整的测试指南
+- [测试指南](./docs/guides/TESTING_GUIDE.md) - 完整的功能测试指南
 
 ### 🔬 技术文档 (docs/technical/)
-- [配置热加载技术文档](./docs/technical/CONFIG_HOT_RELOAD.md) - 配置热加载功能详细实现
-- [Cookie 管理技术文档](./docs/technical/COOKIE_MANAGEMENT.md) - Cookie 失效检测和处理机制详解
-- [Cookie 实现总结](./docs/technical/COOKIE_IMPLEMENTATION_SUMMARY.md) - Cookie 功能实现总结
-- [热加载实现总结](./docs/technical/IMPLEMENTATION_SUMMARY.md) - 热加载实现总结
-- [定期通知功能](./docs/technical/PERIODIC_NOTIFICATION.md) - 定期通知功能说明
-- [交付时间优化](./docs/technical/DELIVERY_OPTIMIZATION.md) - 交付时间优化文档
+**核心功能**:
+- [数据库存储](./docs/technical/DATABASE_STORAGE.md) - SQLite 集成实现
+- [配置热加载](./docs/technical/CONFIG_HOT_RELOAD.md) - 配置文件监听机制
+- [定期通知](./docs/technical/PERIODIC_NOTIFICATION.md) - 通知调度机制
+- [交付优化](./docs/technical/DELIVERY_OPTIMIZATION.md) - 交付时间计算优化
+
+**Cookie 管理专题**:
+- [Cookie 管理](./docs/technical/COOKIE_MANAGEMENT.md) - Cookie 生命周期管理
+- [过期检测实现](./docs/technical/COOKIE_EXPIRATION_IMPLEMENTATION.md) - 过期检测技术细节
+- [过期预警](./docs/technical/COOKIE_EXPIRATION_WARNING.md) - 预警机制设计
+- [自动续期分析](./docs/technical/COOKIE_AUTO_RENEWAL_ANALYSIS.md) - 自动续期可行性
+- [实现总结](./docs/technical/COOKIE_IMPLEMENTATION_SUMMARY.md) - Cookie 功能总结
+
+**项目总结**:
+- [实现总结](./docs/technical/IMPLEMENTATION_SUMMARY.md) - 整体技术实现总结
+- [项目文件说明](./docs/technical/PROJECT_FILES.md) - 文件组织和职责
+
+### ⚡ 性能优化 (docs/optimization/)
+- [交付时间检查优化](./docs/optimization/CHECKDELIVERYTIME_OPTIMIZATION.md) - 算法和性能优化
 
 ### 🔧 脚本工具
 - **测试脚本** (scripts/test/):

@@ -56,8 +56,9 @@ type Monitor struct {
 	webServer           *web.Server           // Web 服务器
 
 	// Web 服务器配置
-	WebEnabled bool // 是否启用 Web 服务器
-	WebPort    int  // Web 服务器端口
+	WebEnabled  bool   // 是否启用 Web 服务器
+	WebPort     int    // Web 服务器端口
+	WebBasePath string // Web 服务器根路由
 }
 
 // 加载或重新加载配置
@@ -91,6 +92,7 @@ func (m *Monitor) loadConfig() error {
 	m.CookieValidDays = config.CookieValidDays
 	m.WebEnabled = config.WebEnabled
 	m.WebPort = config.WebPort
+	m.WebBasePath = config.WebBasePath
 
 	// Cookie 更新时间处理
 	if !config.CookieUpdatedAt.IsZero() {
@@ -260,7 +262,7 @@ func NewMonitor() *Monitor {
 
 	// 初始化 Web 服务器
 	if monitor.WebEnabled && monitor.database != nil {
-		webServer, err := web.NewServer(monitor.database, monitor.OrderID, monitor.WebPort)
+		webServer, err := web.NewServer(monitor.database, monitor.OrderID, monitor.WebPort, monitor.WebBasePath)
 		if err != nil {
 			log.Printf("⚠️  Web 服务器初始化失败: %v", err)
 		} else {
