@@ -112,7 +112,9 @@ func (s *Server) logMiddleware(next http.Handler) http.Handler {
 
 // handleIndex 处理首页
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	// 检查路径是否匹配（考虑 basePath）
+	expectedPath := s.route("/")
+	if r.URL.Path != expectedPath {
 		http.NotFound(w, r)
 		return
 	}
