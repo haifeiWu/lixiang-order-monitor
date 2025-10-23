@@ -21,6 +21,7 @@
 |------|------|------|
 | [SERVERCHAN_SETUP.md](./guides/SERVERCHAN_SETUP.md) | ServerChan（Server酱）配置指南 | ⭐️ 简单 |
 | [WECHAT_SETUP.md](./guides/WECHAT_SETUP.md) | 微信群机器人配置指南 | ⭐️ 简单 |
+| [BARK_SETUP.md](./guides/BARK_SETUP.md) | 🆕 Bark 推送（iOS/macOS）配置指南 | ⭐️ 简单 |
 
 ### 使用指南
 
@@ -62,6 +63,7 @@
 | 脚本 | 功能 | 用途 |
 |------|------|------|
 | `test-notification.sh` | 测试通知功能 | 验证 ServerChan/微信通知 |
+| `test-bark.sh` | 🆕 测试 Bark 推送 | 验证 Bark 推送功能 |
 | `test-cookie-expiry.sh` | 测试 Cookie 失效检测 | 验证 Cookie 管理功能 |
 | `test-cookie-expiration.sh` | 🆕 测试 Cookie 过期预警 | 验证过期预警功能 |
 | `test-hot-reload.sh` | 测试配置热加载 | 验证配置自动重载 |
@@ -75,6 +77,7 @@ cd scripts/test/
 
 # 运行测试
 ./test-notification.sh
+./test-bark.sh              # 新增
 ./test-cookie-expiry.sh
 ./test-cookie-expiration.sh  # 新增
 ./test-hot-reload.sh

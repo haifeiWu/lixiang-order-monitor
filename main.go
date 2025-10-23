@@ -1,74 +1,21 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
+	"lixiang-monitor/cfg"
+	"lixiang-monitor/cookie"
+	"lixiang-monitor/delivery"
+	"lixiang-monitor/notification"
+	"lixiang-monitor/notifier"
+	"lixiang-monitor/utils"
+
 	"github.com/robfig/cron/v3"
-	"github.com/spf13/viper"
 )
-
-// 时间格式常量
-const (
-	DateTimeFormat = "2006-01-02 15:04:05"
-	DateTimeShort  = "2006-01-02 15:04"
-	DateFormat     = "2006-01-02"
-)
-
-// 理想汽车订单响应结构
-type OrderResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Data    struct {
-		Delivery struct {
-			EstimateDeliveringAt string `json:"estimateDeliveringAt"`
-		} `json:"delivery"`
-	} `json:"data"`
-}
-
-// Cookie 失效错误类型
-type CookieExpiredError struct {
-	StatusCode int
-	Message    string
-}
-
-func (e *CookieExpiredError) Error() string {
-	return fmt.Sprintf("Cookie 已失效 (状态码: %d): %s", e.StatusCode, e.Message)
-}
-
-// 微信机器人消息结构
-type WeChatMessage struct {
-	MsgType string `json:"msgtype"`
-	Text    struct {
-		Content string `json:"content"`
-	} `json:"text"`
-}
-
-// ServerChan 通知结构
-type ServerChanNotifier struct {
-	SendKey string
-	BaseURL string
-}
-
-// 通知接口
-type Notifier interface {
-	Send(title, content string) error
-}
-
-// 微信群机器人通知器
-type WeChatWebhookNotifier struct {
-	WebhookURL string
-}
 
 type Monitor struct {
 	OrderID          string
@@ -76,14 +23,13 @@ type Monitor struct {
 	CheckInterval    string
 	LixiangCookies   string
 	LixiangHeaders   map[string]string
-	Notifiers        []Notifier
+	Notifiers        []notifier.Notifier
 	LockOrderTime    time.Time // 锁单时间
 	EstimateWeeksMin int       // 预计交付周数范围（最小）
 	EstimateWeeksMax int       // 预计交付周数范围（最大）
 	cron             *cron.Cron
 
 	// 定期通知相关字段
-	LastNotificationTime        time.Time     // 上次发送通知的时间
 	NotificationInterval        time.Duration // 通知间隔（当交付时间未更新时）
 	EnablePeriodicNotify        bool          // 是否启用定期通知
 	AlwaysNotifyWhenApproaching bool          // 临近交付时总是通知
@@ -99,325 +45,11 @@ type Monitor struct {
 	// 配置热加载相关
 	mu            sync.RWMutex // 读写锁，保护配置的并发访问
 	configVersion int          // 配置版本号，用于跟踪配置变化
-}
 
-// ServerChan 通知器实现
-func (sc *ServerChanNotifier) Send(title, content string) error {
-	if sc.SendKey == "" {
-		return fmt.Errorf("ServerChan SendKey 未配置")
-	}
-
-	// 构建请求数据
-	data := url.Values{}
-	data.Set("title", title)
-	data.Set("desp", content)
-
-	// 构建正确的 ServerChan API URL
-	apiURL := sc.BaseURL + sc.SendKey + ".send"
-
-	// 发送请求
-	resp, err := http.PostForm(apiURL, data)
-	if err != nil {
-		return fmt.Errorf("ServerChan 发送失败: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("ServerChan 返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
-	}
-
-	log.Println("ServerChan 通知发送成功")
-	return nil
-}
-
-// 微信群机器人通知器实现
-func (wc *WeChatWebhookNotifier) Send(title, content string) error {
-	if wc.WebhookURL == "" {
-		return fmt.Errorf("微信 Webhook URL 未配置")
-	}
-
-	// 组合标题和内容
-	message := title
-	if content != "" {
-		message += "\n\n" + content
-	}
-
-	wechatMsg := WeChatMessage{
-		MsgType: "text",
-		Text: struct {
-			Content string `json:"content"`
-		}{
-			Content: message,
-		},
-	}
-
-	jsonData, err := json.Marshal(wechatMsg)
-	if err != nil {
-		return fmt.Errorf("序列化消息失败: %v", err)
-	}
-
-	resp, err := http.Post(wc.WebhookURL, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("发送微信通知失败: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("微信通知返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
-	}
-
-	log.Println("微信群机器人通知发送成功")
-	return nil
-}
-
-// 解析锁单时间
-func parseLockOrderTime(timeStr string) (time.Time, error) {
-	// 支持多种时间格式
-	formats := []string{
-		DateTimeFormat,
-		"2006/01/02 15:04:05",
-		DateTimeShort,
-		"2006/01/02 15:04",
-		DateFormat,
-		"2006/01/02",
-	}
-
-	for _, format := range formats {
-		if t, err := time.Parse(format, timeStr); err == nil {
-			return t, nil
-		}
-	}
-
-	return time.Time{}, fmt.Errorf("无法解析时间格式: %s", timeStr)
-}
-
-// 计算预计交付日期范围
-func (m *Monitor) calculateEstimatedDelivery() (time.Time, time.Time) {
-	minDate := m.LockOrderTime.AddDate(0, 0, m.EstimateWeeksMin*7)
-	maxDate := m.LockOrderTime.AddDate(0, 0, m.EstimateWeeksMax*7)
-	return minDate, maxDate
-}
-
-// 基于当前时间计算剩余交付时间
-func (m *Monitor) calculateRemainingDeliveryTime() (int, int, string) {
-	now := time.Now()
-	minDate, maxDate := m.calculateEstimatedDelivery()
-
-	// 计算距离交付时间的天数
-	daysToMin := int(minDate.Sub(now).Hours() / 24)
-	daysToMax := int(maxDate.Sub(now).Hours() / 24)
-
-	var status string
-	if now.After(maxDate) {
-		// 已超过预计交付时间
-		overdueDays := int(now.Sub(maxDate).Hours() / 24)
-		status = fmt.Sprintf("已超期 %d 天", overdueDays)
-	} else if now.After(minDate) {
-		// 在预计交付时间范围内
-		status = "在预计交付时间范围内"
-	} else if daysToMin <= 0 {
-		// 今天或明天就到交付时间
-		status = "即将到达交付时间"
-	} else {
-		// 还有若干天
-		status = fmt.Sprintf("还有 %d-%d 天", daysToMin, daysToMax)
-	}
-
-	return daysToMin, daysToMax, status
-}
-
-// 计算交付进度百分比
-func (m *Monitor) calculateDeliveryProgress() float64 {
-	now := time.Now()
-
-	// 计算从锁单到预计交付的总时间（取最大值）
-	_, maxDate := m.calculateEstimatedDelivery()
-	totalDuration := maxDate.Sub(m.LockOrderTime)
-
-	// 计算已经过去的时间
-	elapsedDuration := now.Sub(m.LockOrderTime)
-
-	// 计算进度百分比
-	progress := float64(elapsedDuration) / float64(totalDuration) * 100
-
-	// 确保进度在 0-100% 之间
-	if progress < 0 {
-		progress = 0
-	} else if progress > 100 {
-		progress = 100
-	}
-
-	return progress
-}
-
-// 格式化交付日期范围
-func (m *Monitor) formatDeliveryEstimate() string {
-	minDate, maxDate := m.calculateEstimatedDelivery()
-	_, _, status := m.calculateRemainingDeliveryTime()
-	progress := m.calculateDeliveryProgress()
-
-	baseInfo := ""
-	if m.EstimateWeeksMin == m.EstimateWeeksMax {
-		baseInfo = fmt.Sprintf("预计 %d 周后交付 (%s 左右)",
-			m.EstimateWeeksMin,
-			minDate.Format(DateFormat))
-	} else {
-		baseInfo = fmt.Sprintf("预计 %d-%d 周后交付 (%s 至 %s)",
-			m.EstimateWeeksMin,
-			m.EstimateWeeksMax,
-			minDate.Format(DateFormat),
-			maxDate.Format(DateFormat))
-	}
-
-	// 添加当前时间状态和进度信息
-	now := time.Now()
-	if now.Before(minDate) {
-		// 还未到交付时间
-		return fmt.Sprintf("%s\n📅 当前状态: %s\n📊 等待进度: %.1f%%",
-			baseInfo, status, progress)
-	} else if now.After(maxDate) {
-		// 已超过交付时间
-		return fmt.Sprintf("%s\n⚠️  当前状态: %s\n📊 进度: %.1f%% (已超期)",
-			baseInfo, status, progress)
-	} else {
-		// 在交付时间范围内
-		return fmt.Sprintf("%s\n✅ 当前状态: %s\n📊 进度: %.1f%%",
-			baseInfo, status, progress)
-	}
-}
-
-// 获取详细的交付时间信息
-func (m *Monitor) getDetailedDeliveryInfo() string {
-	now := time.Now()
-	minDate, maxDate := m.calculateEstimatedDelivery()
-	_, _, status := m.calculateRemainingDeliveryTime()
-	progress := m.calculateDeliveryProgress()
-
-	// 计算锁单至今的天数
-	daysSinceLock := int(now.Sub(m.LockOrderTime).Hours() / 24)
-
-	info := fmt.Sprintf("📅 锁单时间: %s (%d天前)\n",
-		m.LockOrderTime.Format(DateTimeShort), daysSinceLock)
-
-	info += fmt.Sprintf("🔮 基于锁单时间预测: %s\n", m.formatDeliveryEstimate())
-	info += fmt.Sprintf("📊 当前状态: %s (进度: %.1f%%)\n", status, progress)
-
-	// 添加具体的倒计时信息
-	if now.Before(minDate) {
-		daysToMin := int(minDate.Sub(now).Hours() / 24)
-		daysToMax := int(maxDate.Sub(now).Hours() / 24)
-		if daysToMin <= 7 {
-			info += fmt.Sprintf("⏰ 距离最早交付时间: %d天\n", daysToMin)
-		}
-		if daysToMax <= 14 {
-			info += fmt.Sprintf("⏰ 距离最晚交付时间: %d天\n", daysToMax)
-		}
-	}
-
-	return info
-}
-
-// 获取交付时间智能分析报告
-func (m *Monitor) getDeliveryAnalysisReport() string {
-	now := time.Now()
-	minDate, maxDate := m.calculateEstimatedDelivery()
-	daysToMin, _, status := m.calculateRemainingDeliveryTime()
-	progress := m.calculateDeliveryProgress()
-
-	report := "📊 交付时间智能分析报告\n"
-	report += "=" + strings.Repeat("=", 30) + "\n\n"
-
-	// 基本信息
-	daysSinceLock := int(now.Sub(m.LockOrderTime).Hours() / 24)
-	report += fmt.Sprintf("🔐 锁单信息: %s (%d天前)\n",
-		m.LockOrderTime.Format(DateTimeShort), daysSinceLock)
-
-	report += fmt.Sprintf("📅 预计交付: %s - %s\n",
-		minDate.Format(DateFormat), maxDate.Format(DateFormat))
-
-	report += fmt.Sprintf("📈 当前进度: %.1f%%\n", progress)
-	report += fmt.Sprintf("⏱️  剩余时间: %s\n\n", status)
-
-	// 时间状态分析
-	if now.Before(minDate) {
-		if daysToMin <= 3 {
-			report += "🚨 紧急提醒: 即将进入交付时间窗口！\n"
-		} else if daysToMin <= 7 {
-			report += "⚡ 重要提醒: 距离交付时间不到一周\n"
-		} else if daysToMin <= 14 {
-			report += "📢 提前提醒: 距离交付时间不到两周\n"
-		} else {
-			report += "😌 状态良好: 还有充足的等待时间\n"
-		}
-	} else if now.After(minDate) && now.Before(maxDate) {
-		report += "🎯 关键时期: 正处于预计交付时间范围内\n"
-		report += "👀 建议: 密切关注官方通知\n"
-	} else if now.After(maxDate) {
-		overdueDays := int(now.Sub(maxDate).Hours() / 24)
-		report += "⚠️  延期状态: 已超过预计交付时间\n"
-		if overdueDays <= 7 {
-			report += "💡 建议: 可联系客服了解具体情况\n"
-		} else {
-			report += "📞 建议: 强烈建议联系客服获取最新进展\n"
-		}
-	}
-
-	return report
-} // 检查是否临近预计交付时间
-func (m *Monitor) isApproachingDelivery() (bool, string) {
-	now := time.Now()
-	minDate, maxDate := m.calculateEstimatedDelivery()
-
-	// 计算距离最早预计交付时间的天数
-	daysToMin := int(minDate.Sub(now).Hours() / 24)
-	daysToMax := int(maxDate.Sub(now).Hours() / 24)
-
-	// 如果在预计交付时间范围内
-	if now.After(minDate) && now.Before(maxDate) {
-		return true, "当前处于预计交付时间范围内"
-	}
-
-	// 如果距离最早交付时间不到7天
-	if daysToMin <= 7 && daysToMin > 0 {
-		return true, fmt.Sprintf("距离最早预计交付时间还有 %d 天", daysToMin)
-	}
-
-	// 如果距离最晚交付时间不到7天
-	if daysToMax <= 7 && daysToMax > 0 {
-		return true, fmt.Sprintf("距离最晚预计交付时间还有 %d 天", daysToMax)
-	}
-
-	// 如果已经超过预计交付时间
-	if now.After(maxDate) {
-		overdueDays := int(now.Sub(maxDate).Hours() / 24)
-		return true, fmt.Sprintf("已超过预计交付时间 %d 天", overdueDays)
-	}
-
-	return false, ""
-}
-
-// 检查是否应该发送定期通知
-func (m *Monitor) shouldSendPeriodicNotification() bool {
-	if !m.EnablePeriodicNotify {
-		return false
-	}
-
-	now := time.Now()
-
-	// 如果从未发送过通知，返回false（初始通知会单独处理）
-	if m.LastNotificationTime.IsZero() {
-		return false
-	}
-
-	// 检查是否已经超过通知间隔
-	return now.Sub(m.LastNotificationTime) >= m.NotificationInterval
-}
-
-// 更新最后通知时间
-func (m *Monitor) updateLastNotificationTime() {
-	m.LastNotificationTime = time.Now()
+	// 包管理器
+	deliveryInfo        *delivery.Info        // 交付信息管理器
+	cookieManager       *cookie.Manager       // Cookie 管理器
+	notificationHandler *notification.Handler // 通知处理器
 }
 
 // 加载或重新加载配置
@@ -425,80 +57,63 @@ func (m *Monitor) loadConfig() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 解析锁单时间
-	lockOrderTimeStr := viper.GetString("lock_order_time")
-	lockOrderTime, err := parseLockOrderTime(lockOrderTimeStr)
+	// 使用 cfg 包加载配置
+	config, err := cfg.Load()
 	if err != nil {
-		log.Printf("锁单时间解析失败: %v, 保持当前时间", err)
-		if m.LockOrderTime.IsZero() {
-			lockOrderTime, _ = time.Parse(DateTimeFormat, "2025-09-27 13:08:00")
-		} else {
-			lockOrderTime = m.LockOrderTime
-		}
-	}
-
-	// 更新配置
-	m.OrderID = viper.GetString("order_id")
-	m.LixiangCookies = viper.GetString("lixiang_cookies")
-	m.LockOrderTime = lockOrderTime
-	m.EstimateWeeksMin = viper.GetInt("estimate_weeks_min")
-	m.EstimateWeeksMax = viper.GetInt("estimate_weeks_max")
-	m.EnablePeriodicNotify = viper.GetBool("enable_periodic_notify")
-	m.NotificationInterval = time.Duration(viper.GetInt("notification_interval_hours")) * time.Hour
-	m.AlwaysNotifyWhenApproaching = viper.GetBool("always_notify_when_approaching")
-
-	// Cookie 过期管理配置
-	m.CookieValidDays = viper.GetInt("cookie_valid_days")
-	if m.CookieValidDays == 0 {
-		m.CookieValidDays = 7 // 默认 7 天
-	}
-
-	// 如果配置中有 cookie_updated_at，则使用；否则使用当前时间
-	cookieUpdatedStr := viper.GetString("cookie_updated_at")
-	if cookieUpdatedStr != "" {
-		if parsedTime, err := time.Parse(DateTimeFormat, cookieUpdatedStr); err == nil {
-			m.CookieUpdatedAt = parsedTime
-		} else {
-			m.CookieUpdatedAt = time.Now()
-		}
-	} else if m.CookieUpdatedAt.IsZero() {
-		// 首次启动，使用当前时间
-		m.CookieUpdatedAt = time.Now()
+		return fmt.Errorf("加载配置失败: %v", err)
 	}
 
 	// 检查检查间隔是否变化
-	newCheckInterval := viper.GetString("check_interval")
 	checkIntervalChanged := false
-	if newCheckInterval != m.CheckInterval && m.CheckInterval != "" {
-		// 只有在非首次加载且间隔发生变化时才记录
+	if config.CheckInterval != m.CheckInterval && m.CheckInterval != "" {
 		checkIntervalChanged = true
 	}
-	m.CheckInterval = newCheckInterval
 
-	// 重新初始化通知器
-	var notifiers []Notifier
+	// 更新 Monitor 字段
+	m.OrderID = config.OrderID
+	m.LixiangCookies = config.LixiangCookies
+	m.CheckInterval = config.CheckInterval
+	m.LockOrderTime = config.LockOrderTime
+	m.EstimateWeeksMin = config.EstimateWeeksMin
+	m.EstimateWeeksMax = config.EstimateWeeksMax
+	m.EnablePeriodicNotify = config.EnablePeriodicNotify
+	m.NotificationInterval = time.Duration(config.NotificationIntervalHours) * time.Hour
+	m.AlwaysNotifyWhenApproaching = config.AlwaysNotifyWhenApproaching
+	m.Notifiers = config.Notifiers
+	m.CookieValidDays = config.CookieValidDays
 
-	// 添加微信群机器人通知器
-	wechatWebhookURL := viper.GetString("wechat_webhook_url")
-	if wechatWebhookURL != "" {
-		notifiers = append(notifiers, &WeChatWebhookNotifier{
-			WebhookURL: wechatWebhookURL,
-		})
+	// Cookie 更新时间处理
+	if !config.CookieUpdatedAt.IsZero() {
+		m.CookieUpdatedAt = config.CookieUpdatedAt
+	} else if m.CookieUpdatedAt.IsZero() {
+		m.CookieUpdatedAt = time.Now()
 	}
 
-	// 添加 ServerChan 通知器
-	serverChanSendKey := viper.GetString("serverchan_sendkey")
-	if serverChanSendKey != "" {
-		notifiers = append(notifiers, &ServerChanNotifier{
-			SendKey: serverChanSendKey,
-			BaseURL: viper.GetString("serverchan_baseurl"),
-		})
-	}
-
-	m.Notifiers = notifiers
 	m.configVersion++
-
 	log.Printf("配置已加载，版本: %d", m.configVersion)
+
+	// 同步更新 deliveryInfo
+	if m.deliveryInfo != nil {
+		m.deliveryInfo = delivery.NewInfo(m.LockOrderTime, m.EstimateWeeksMin, m.EstimateWeeksMax)
+	}
+
+	// 同步更新 cookieManager
+	if m.cookieManager != nil {
+		m.cookieManager.UpdateCookie(m.LixiangCookies, m.LixiangHeaders)
+		m.cookieManager.ValidDays = m.CookieValidDays
+		m.cookieManager.UpdatedAt = m.CookieUpdatedAt
+	}
+
+	// 同步更新 notificationHandler
+	if m.notificationHandler != nil {
+		m.notificationHandler.UpdateConfig(
+			m.Notifiers,
+			m.deliveryInfo,
+			m.NotificationInterval,
+			m.EnablePeriodicNotify,
+			m.AlwaysNotifyWhenApproaching,
+		)
+	}
 
 	// 如果检查间隔变更且 cron 已经启动，返回错误提示需要重启
 	if checkIntervalChanged && m.cron != nil {
@@ -510,15 +125,7 @@ func (m *Monitor) loadConfig() error {
 
 // 监听配置文件变化
 func (m *Monitor) watchConfig() {
-	viper.OnConfigChange(func(e fsnotify.Event) {
-		log.Printf("检测到配置文件变化: %s", e.Name)
-
-		// 重新读取配置
-		if err := viper.ReadInConfig(); err != nil {
-			log.Printf("重新读取配置文件失败: %v", err)
-			return
-		}
-
+	cfg.Watch(func() {
 		// 重新加载配置
 		if err := m.loadConfig(); err != nil {
 			log.Printf("重新加载配置失败: %v", err)
@@ -534,47 +141,26 @@ func (m *Monitor) watchConfig() {
 		title := "⚙️ 监控服务配置已更新"
 		content := fmt.Sprintf("配置版本: %d\n更新时间: %s\n\n当前配置:\n订单ID: %s\n检查间隔: %s\n通知器数量: %d\n定期通知: %v\n通知间隔: %.0f小时",
 			m.configVersion,
-			time.Now().Format(DateTimeFormat),
+			time.Now().Format(utils.DateTimeFormat),
 			m.OrderID,
 			m.CheckInterval,
 			len(m.Notifiers),
 			m.EnablePeriodicNotify,
 			m.NotificationInterval.Hours())
 
-		if err := m.sendNotification(title, content); err != nil {
+		if err := m.notificationHandler.SendCustomNotification(title, content); err != nil {
 			log.Printf("发送配置更新通知失败: %v", err)
 		}
 	})
-
-	viper.WatchConfig()
-	log.Println("✅ 配置文件监听已启动")
 }
 
 func NewMonitor() *Monitor {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
-
-	if err := viper.ReadInConfig(); err != nil {
-		log.Printf("配置文件读取失败: %v", err)
+	// 使用 cfg 包初始化配置
+	if err := cfg.Init(); err != nil {
+		log.Printf("初始化配置失败: %v", err)
 	}
 
-	// 设置默认值
-	viper.SetDefault("order_id", "177971759268550919")
-	viper.SetDefault("check_interval", "@every 30m") // 每30分钟检查一次
-	viper.SetDefault("wechat_webhook_url", "")
-	viper.SetDefault("serverchan_sendkey", "")
-	viper.SetDefault("serverchan_baseurl", "https://sctapi.ftqq.com/")
-	viper.SetDefault("lock_order_time", "2025-09-27 13:08:00")
-	viper.SetDefault("estimate_weeks_min", 7)
-	viper.SetDefault("estimate_weeks_max", 9)
-	// 新增定期通知配置
-	viper.SetDefault("enable_periodic_notify", true)         // 启用定期通知
-	viper.SetDefault("notification_interval_hours", 24)      // 24小时发送一次状态通知
-	viper.SetDefault("always_notify_when_approaching", true) // 临近交付时总是通知
-
 	monitor := &Monitor{
-		LastNotificationTime: time.Time{}, // 初始化为零值，表示从未发送过通知
 		LixiangHeaders: map[string]string{
 			"accept":             "application/json, text/plain, */*",
 			"accept-language":    "en-US,en;q=0.9,zh-CN;q=0.8,zh-TW;q=0.7,zh;q=0.6",
@@ -602,11 +188,62 @@ func NewMonitor() *Monitor {
 		log.Printf("加载初始配置失败: %v", err)
 	}
 
+	// 初始化 delivery 信息管理器
+	monitor.deliveryInfo = delivery.NewInfo(monitor.LockOrderTime, monitor.EstimateWeeksMin, monitor.EstimateWeeksMax)
+
+	// 初始化 cookie 管理器
+	monitor.cookieManager = cookie.NewManager(
+		monitor.LixiangCookies,
+		monitor.LixiangHeaders,
+		monitor.CookieValidDays,
+		monitor.CookieUpdatedAt,
+	)
+
+	// 设置 cookie 管理器的回调函数
+	monitor.cookieManager.OnCookieExpired = func(statusCode int, message string) {
+		title := "❌ 理想汽车 Cookie 已失效"
+		content := fmt.Sprintf("检测到 Cookie 已失效,需要立即更新！\n\n"+
+			"状态码: %d\n"+
+			"错误信息: %s\n"+
+			"失败次数: %d\n"+
+			"检测时间: %s\n\n"+
+			"⚠️  请立即更新 config.yaml 中的 lixiang_cookies 字段！",
+			statusCode, message, monitor.cookieManager.ConsecutiveFailure, time.Now().Format(utils.DateTimeFormat))
+
+		if err := monitor.notificationHandler.SendCustomNotification(title, content); err != nil {
+			log.Printf("Cookie 失效通知发送失败: %v", err)
+		}
+	}
+
+	monitor.cookieManager.OnCookieExpirationWarning = func(timeDesc, expireTime, updatedAt string, ageInDays float64) {
+		title := "⚠️  理想汽车 Cookie 即将过期"
+		content := fmt.Sprintf("您的 Cookie 即将过期,建议提前更新！\n\n"+
+			"剩余时间: %s\n"+
+			"过期时间: %s\n"+
+			"更新时间: %s\n"+
+			"已使用: %.1f 天\n\n"+
+			"请及时更新 config.yaml 中的 lixiang_cookies 字段，避免监控中断。",
+			timeDesc, expireTime, updatedAt, ageInDays)
+
+		if err := monitor.notificationHandler.SendCustomNotification(title, content); err != nil {
+			log.Printf("Cookie 过期预警通知发送失败: %v", err)
+		}
+	}
+
+	// 初始化 notification 处理器
+	monitor.notificationHandler = notification.NewHandler(
+		monitor.Notifiers,
+		monitor.deliveryInfo,
+		monitor.NotificationInterval,
+		monitor.EnablePeriodicNotify,
+		monitor.AlwaysNotifyWhenApproaching,
+	)
+
 	// 启动配置文件监听
 	monitor.watchConfig()
 
 	if len(monitor.Notifiers) == 0 {
-		log.Println("⚠️  未配置任何通知器，将不会发送通知")
+		log.Println("⚠️  未配置任何通知器,将不会发送通知")
 	} else {
 		log.Printf("✅ 已配置 %d 个通知器", len(monitor.Notifiers))
 	}
@@ -614,283 +251,91 @@ func NewMonitor() *Monitor {
 	return monitor
 }
 
-func (m *Monitor) fetchOrderData() (*OrderResponse, error) {
-	m.mu.RLock()
-	orderID := m.OrderID
-	cookies := m.LixiangCookies
-	headers := m.LixiangHeaders
-	m.mu.RUnlock()
-
-	url := fmt.Sprintf("https://api-web.lixiang.com/vehicle-api/v1-0/orders/pointer/vehicleOrderDetail_PC/%s", orderID)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %v", err)
+// parseOrderResponse 解析订单响应数据
+func (m *Monitor) parseOrderResponse(rawData interface{}) (estimateTime string, err error) {
+	// 将 interface{} 转换为 map[string]interface{}
+	orderDataMap, ok := rawData.(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("订单数据格式错误")
 	}
 
-	// 设置请求头
-	for key, value := range headers {
-		req.Header.Set(key, value)
+	// 解析 code 字段
+	code := 0
+	if codeVal, ok := orderDataMap["code"].(float64); ok {
+		code = int(codeVal)
 	}
 
-	// 设置 Cookie
-	if cookies != "" {
-		req.Header.Set("Cookie", cookies)
-	}
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("请求失败: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %v", err)
-	}
-
-	// 检测 Cookie 失效的常见状态码
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		m.handleCookieExpired(resp.StatusCode, string(body))
-		return nil, &CookieExpiredError{
-			StatusCode: resp.StatusCode,
-			Message:    string(body),
+	if code != 0 {
+		message := ""
+		if msgVal, ok := orderDataMap["message"].(string); ok {
+			message = msgVal
 		}
+		return "", fmt.Errorf("API 返回错误: %s", message)
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("API 返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
-	}
-
-	var orderResp OrderResponse
-	if err := json.Unmarshal(body, &orderResp); err != nil {
-		return nil, fmt.Errorf("解析 JSON 失败: %v", err)
-	}
-
-	// 检查业务层错误码（理想汽车可能返回 200 但 code != 0）
-	if orderResp.Code != 0 {
-		// 常见的认证失败错误码
-		if orderResp.Code == 401 || orderResp.Code == 403 ||
-			orderResp.Code == 10001 || orderResp.Code == 10002 {
-			m.handleCookieExpired(orderResp.Code, orderResp.Message)
-			return nil, &CookieExpiredError{
-				StatusCode: orderResp.Code,
-				Message:    orderResp.Message,
+	// 解析 EstimateDeliveringAt
+	if data, ok := orderDataMap["data"].(map[string]interface{}); ok {
+		if delivery, ok := data["delivery"].(map[string]interface{}); ok {
+			if estimateTime, ok := delivery["estimateDeliveringAt"].(string); ok {
+				return estimateTime, nil
 			}
 		}
-		return nil, fmt.Errorf("API 返回业务错误: code=%d, message=%s", orderResp.Code, orderResp.Message)
 	}
 
-	// 请求成功，重置失败计数器
-	m.mu.Lock()
-	m.ConsecutiveCookieFailure = 0
-	m.CookieExpiredNotified = false
-	m.LastCookieCheckTime = time.Now()
-	m.mu.Unlock()
-
-	return &orderResp, nil
+	return "", nil
 }
 
-// checkCookieExpiration 检查 Cookie 是否即将过期
-func (m *Monitor) checkCookieExpiration() {
-	m.mu.RLock()
-	cookieValidDays := m.CookieValidDays
-	cookieUpdatedAt := m.CookieUpdatedAt
-	alreadyWarned := m.CookieExpirationWarned
-	m.mu.RUnlock()
-
-	if cookieValidDays == 0 {
-		return // 未配置有效期，跳过检查
-	}
-
-	// 计算 Cookie 年龄和剩余时间
-	cookieAge := time.Since(cookieUpdatedAt)
-	expireTime := cookieUpdatedAt.Add(time.Duration(cookieValidDays) * 24 * time.Hour)
-	remaining := time.Until(expireTime)
-
-	// 提前 2 天开始预警（48 小时）
-	warningThreshold := 48 * time.Hour
-
-	if remaining > 0 && remaining < warningThreshold && !alreadyWarned {
-		// 计算剩余天数和小时数
-		remainingDays := int(remaining.Hours() / 24)
-		remainingHours := int(remaining.Hours()) % 24
-
-		var timeDesc string
-		if remainingDays > 0 {
-			timeDesc = fmt.Sprintf("%d 天 %d 小时", remainingDays, remainingHours)
-		} else {
-			timeDesc = fmt.Sprintf("%d 小时", remainingHours)
-		}
-
-		title := "⏰ Cookie 即将过期提醒"
-		content := fmt.Sprintf(`您的理想汽车订单监控 Cookie 即将过期！
-
-**过期预警：**
-- 剩余有效时间：%s
-- 预计过期时间：%s
-- 上次更新时间：%s
-- Cookie 使用天数：%.1f 天
-
-**为避免监控服务中断，请及时更新 Cookie**
-
-**更新方法（5 分钟完成）：**
-1. 访问 https://www.lixiang.com/ 并登录
-2. 按 F12 打开开发者工具
-3. 切换到 Network (网络) 标签
-4. 刷新页面 (F5)
-5. 点击任意 API 请求
-6. 复制 Request Headers 中的 Cookie 值
-7. 更新 config.yaml 中的 lixiang_cookies 字段
-8. 保存文件（自动生效，无需重启）
-
-**快速指南**：
-查看 docs/guides/COOKIE_QUICK_FIX.md 获取详细图文教程
-
-**提示**：
-更新 Cookie 后，系统会自动记录更新时间并重置有效期。`,
-			timeDesc,
-			expireTime.Format(DateTimeFormat),
-			cookieUpdatedAt.Format(DateTimeFormat),
-			cookieAge.Hours()/24,
-		)
-
-		if err := m.sendNotification(title, content); err != nil {
-			log.Printf("Cookie 过期预警通知发送失败: %v", err)
-		} else {
-			m.mu.Lock()
-			m.CookieExpirationWarned = true
-			m.mu.Unlock()
-			log.Printf("✅ Cookie 过期预警通知已发送（剩余: %s）", timeDesc)
-		}
-	} else if remaining < 0 {
-		// Cookie 已过期
-		if !alreadyWarned {
-			log.Printf("⚠️  Cookie 已过期 %s", time.Since(expireTime))
-		}
-	} else if remaining > warningThreshold && alreadyWarned {
-		// Cookie 已更新，重置预警状态
-		m.mu.Lock()
-		m.CookieExpirationWarned = false
-		m.mu.Unlock()
+// logDeliveryInfo 记录交付信息日志
+func (m *Monitor) logDeliveryInfo(lockOrderTime time.Time, isApproaching bool, approachMsg string) {
+	predictedDelivery := m.deliveryInfo.FormatDeliveryEstimate()
+	log.Printf("锁单时间: %s", lockOrderTime.Format(utils.DateTimeFormat))
+	log.Printf("基于锁单时间预测: %s", predictedDelivery)
+	if isApproaching {
+		log.Printf("交付提醒: %s", approachMsg)
 	}
 }
 
-// getCookieStatus 获取 Cookie 状态信息
-func (m *Monitor) getCookieStatus() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.CookieValidDays == 0 {
-		return "未配置过期检测"
-	}
-
-	expireTime := m.CookieUpdatedAt.Add(time.Duration(m.CookieValidDays) * 24 * time.Hour)
-	remaining := time.Until(expireTime)
-
-	if remaining < 0 {
-		return fmt.Sprintf("❌ 已过期 %s", time.Since(expireTime).Round(time.Hour))
-	} else if remaining < 24*time.Hour {
-		return fmt.Sprintf("⚠️  即将过期（剩余 %d 小时）", int(remaining.Hours()))
-	} else if remaining < 48*time.Hour {
-		return fmt.Sprintf("⚠️  即将过期（剩余 %.1f 天）", remaining.Hours()/24)
+// handleDeliveryNotification 处理交付通知逻辑
+func (m *Monitor) handleDeliveryNotification(orderID, currentEstimateTime, lastEstimateTime string, isApproaching bool, approachMsg string) {
+	if lastEstimateTime == "" {
+		// 首次检查
+		if err := m.notificationHandler.HandleFirstCheck(orderID, currentEstimateTime, isApproaching, approachMsg); err != nil {
+			log.Printf("处理首次检查通知失败: %v", err)
+		}
+		m.updateLastEstimateTime(currentEstimateTime)
+	} else if currentEstimateTime != lastEstimateTime {
+		// 时间发生变化
+		if err := m.notificationHandler.HandleTimeChanged(orderID, currentEstimateTime, lastEstimateTime, isApproaching, approachMsg); err != nil {
+			log.Printf("处理时间变更通知失败: %v", err)
+		}
+		m.updateLastEstimateTime(currentEstimateTime)
 	} else {
-		return fmt.Sprintf("🟢 正常（剩余 %.1f 天）", remaining.Hours()/24)
+		// 时间未变化，检查是否需要定期通知
+		log.Println("交付时间未发生变化")
+		if err := m.notificationHandler.HandlePeriodicNotification(orderID, currentEstimateTime, isApproaching, approachMsg); err != nil {
+			log.Printf("处理定期通知失败: %v", err)
+		}
 	}
 }
 
-// handleCookieExpired 处理 Cookie 失效的情况
-func (m *Monitor) handleCookieExpired(statusCode int, message string) {
+// updateLastEstimateTime 更新最后的预估时间
+func (m *Monitor) updateLastEstimateTime(estimateTime string) {
 	m.mu.Lock()
-	m.ConsecutiveCookieFailure++
-	failureCount := m.ConsecutiveCookieFailure
-	alreadyNotified := m.CookieExpiredNotified
+	m.LastEstimateTime = estimateTime
 	m.mu.Unlock()
-
-	log.Printf("⚠️  Cookie 验证失败 (状态码: %d, 连续失败: %d 次): %s", statusCode, failureCount, message)
-
-	// 连续失败 3 次且未通知过，则发送告警
-	if failureCount >= 3 && !alreadyNotified {
-		title := "🚨 理想汽车 Cookie 已失效"
-		content := fmt.Sprintf(`您的理想汽车订单监控 Cookie 已失效，请及时更新！
-
-**失效详情：**
-- 状态码：%d
-- 错误信息：%s
-- 连续失败次数：%d 次
-- 检测时间：%s
-
-**Cookie 更新步骤：**
-1. 打开浏览器访问 https://www.lixiang.com/
-2. 登录您的理想汽车账号
-3. 按 F12 打开开发者工具
-4. 切换到 Network 标签
-5. 刷新页面，找到任意请求
-6. 在请求头中复制完整的 Cookie 字符串
-7. 更新 config.yaml 中的 lixiang_cookies 字段
-
-**关键 Cookie 字段说明：**
-- X-LX-Token: 会话令牌（必需，定期过期）
-- authli_device_id: 设备标识（必需）
-- X-LX-Deviceid: 设备 ID（必需）
-
-程序将继续运行，但无法获取订单数据，直到 Cookie 更新。`,
-			statusCode, message, failureCount, time.Now().Format(DateTimeFormat))
-
-		if err := m.sendNotification(title, content); err != nil {
-			log.Printf("Cookie 失效通知发送失败: %v", err)
-		} else {
-			m.mu.Lock()
-			m.CookieExpiredNotified = true
-			m.mu.Unlock()
-			log.Println("✅ Cookie 失效通知已发送")
-		}
-	}
-}
-
-func (m *Monitor) sendNotification(title, content string) error {
-	m.mu.RLock()
-	notifiers := m.Notifiers
-	m.mu.RUnlock()
-
-	if len(notifiers) == 0 {
-		log.Println("未配置任何通知器，跳过通知")
-		return nil
-	}
-
-	var errors []string
-	successCount := 0
-
-	for _, notifier := range notifiers {
-		if err := notifier.Send(title, content); err != nil {
-			log.Printf("通知发送失败: %v", err)
-			errors = append(errors, err.Error())
-		} else {
-			successCount++
-		}
-	}
-
-	if successCount == 0 {
-		return fmt.Errorf("所有通知器发送失败: %v", errors)
-	} else if len(errors) > 0 {
-		log.Printf("部分通知器发送失败: %v", errors)
-	}
-
-	log.Printf("成功发送 %d/%d 个通知", successCount, len(notifiers))
-	return nil
 }
 
 func (m *Monitor) checkDeliveryTime() {
 	log.Println("开始检查订单交付时间...")
 
-	orderData, err := m.fetchOrderData()
+	// 获取订单数据
+	m.mu.RLock()
+	orderID := m.OrderID
+	m.mu.RUnlock()
+
+	rawData, err := m.cookieManager.FetchOrderData(orderID)
 	if err != nil {
-		// 检查是否是 Cookie 失效错误
-		if _, isCookieError := err.(*CookieExpiredError); isCookieError {
+		if _, isCookieError := err.(*cookie.CookieExpiredError); isCookieError {
 			log.Printf("⚠️  Cookie 已失效，跳过本次检查: %v", err)
 			return
 		}
@@ -898,144 +343,29 @@ func (m *Monitor) checkDeliveryTime() {
 		return
 	}
 
-	if orderData.Code != 0 {
-		log.Printf("API 返回错误: %s", orderData.Message)
+	// 解析订单响应
+	currentEstimateTime, err := m.parseOrderResponse(rawData)
+	if err != nil {
+		log.Printf("%v", err)
 		return
 	}
 
-	currentEstimateTime := orderData.Data.Delivery.EstimateDeliveringAt
 	log.Printf("当前预计交付时间: %s", currentEstimateTime)
 
-	// 读取配置（加锁保护）
+	// 读取配置信息
 	m.mu.RLock()
-	orderID := m.OrderID
 	lockOrderTime := m.LockOrderTime
 	lastEstimateTime := m.LastEstimateTime
 	m.mu.RUnlock()
 
-	// 计算基于锁单时间的预测
-	predictedDelivery := m.formatDeliveryEstimate()
-	isApproaching, approachMsg := m.isApproachingDelivery()
+	// 计算交付预测和临近状态
+	isApproaching, approachMsg := m.deliveryInfo.IsApproachingDelivery()
 
-	log.Printf("锁单时间: %s", lockOrderTime.Format(DateTimeFormat))
-	log.Printf("基于锁单时间预测: %s", predictedDelivery)
-	if isApproaching {
-		log.Printf("交付提醒: %s", approachMsg)
-	}
+	// 记录交付信息
+	m.logDeliveryInfo(lockOrderTime, isApproaching, approachMsg)
 
-	// 如果是第一次检查，记录当前时间
-	if lastEstimateTime == "" {
-		m.mu.Lock()
-		m.LastEstimateTime = currentEstimateTime
-		m.mu.Unlock()
-
-		log.Println("初次检查，记录当前交付时间")
-
-		// 发送初始通知
-		title := "🚗 理想汽车订单监控已启动"
-		content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n\n%s",
-			orderID,
-			currentEstimateTime,
-			m.getDetailedDeliveryInfo())
-
-		if isApproaching {
-			content += "\n\n⚠️ " + approachMsg
-		}
-
-		if err := m.sendNotification(title, content); err != nil {
-			log.Printf("发送初始通知失败: %v", err)
-		} else {
-			// 初始通知成功后也要更新通知时间
-			m.updateLastNotificationTime()
-		}
-		return
-	}
-
-	// 检查时间是否发生变化
-	if currentEstimateTime != lastEstimateTime {
-		log.Printf("检测到交付时间变化！从 %s 变更为 %s", lastEstimateTime, currentEstimateTime)
-
-		title := "🚗 理想汽车交付时间更新通知"
-		content := fmt.Sprintf("订单号: %s\n原官方预计时间: %s\n新官方预计时间: %s\n变更时间: %s\n\n%s",
-			orderID,
-			lastEstimateTime,
-			currentEstimateTime,
-			time.Now().Format(DateTimeFormat),
-			m.getDetailedDeliveryInfo())
-
-		if isApproaching {
-			content += "\n\n⚠️ " + approachMsg
-		}
-
-		if err := m.sendNotification(title, content); err != nil {
-			log.Printf("发送变更通知失败: %v", err)
-		}
-
-		// 更新记录的时间和通知时间
-		m.mu.Lock()
-		m.LastEstimateTime = currentEstimateTime
-		m.mu.Unlock()
-		m.updateLastNotificationTime()
-	} else {
-		log.Println("交付时间未发生变化")
-
-		// 检查是否需要发送定期通知或临近交付提醒
-		shouldNotifyPeriodic := m.shouldSendPeriodicNotification()
-
-		m.mu.RLock()
-		alwaysNotifyWhenApproaching := m.AlwaysNotifyWhenApproaching
-		notificationInterval := m.NotificationInterval
-		m.mu.RUnlock()
-
-		shouldNotifyApproaching := isApproaching && alwaysNotifyWhenApproaching
-
-		if shouldNotifyPeriodic || shouldNotifyApproaching {
-			var title string
-			var notifyReasons []string
-
-			if shouldNotifyPeriodic {
-				title = "📊 理想汽车订单状态定期报告"
-				notifyReasons = append(notifyReasons, "定期状态更新")
-				log.Printf("发送定期通知，距离上次通知已过 %.1f 小时",
-					time.Since(m.LastNotificationTime).Hours())
-			}
-
-			if shouldNotifyApproaching {
-				if title == "" {
-					title = "⏰ 理想汽车交付时间提醒"
-				}
-				notifyReasons = append(notifyReasons, "临近交付时间")
-				log.Printf("发送临近交付提醒: %s", approachMsg)
-			}
-
-			content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n通知原因: %s\n\n%s",
-				orderID,
-				currentEstimateTime,
-				strings.Join(notifyReasons, "、"),
-				m.getDetailedDeliveryInfo())
-
-			if isApproaching {
-				content += "\n\n⚠️ " + approachMsg
-			}
-
-			// 添加定期通知的额外信息
-			if shouldNotifyPeriodic {
-				content += fmt.Sprintf("\n\n📅 通知间隔: 每%.0f小时\n⏰ 下次通知时间: %s",
-					notificationInterval.Hours(),
-					time.Now().Add(notificationInterval).Format(DateTimeShort))
-			}
-
-			if err := m.sendNotification(title, content); err != nil {
-				log.Printf("发送通知失败: %v", err)
-			} else {
-				// 只有成功发送通知后才更新时间
-				m.updateLastNotificationTime()
-				log.Printf("成功发送通知，原因: %s", strings.Join(notifyReasons, "、"))
-			}
-		} else {
-			log.Println("无需发送通知：未到定期通知时间且非临近交付期")
-		}
-	}
+	// 处理通知逻辑
+	m.handleDeliveryNotification(orderID, currentEstimateTime, lastEstimateTime, isApproaching, approachMsg)
 }
 
 func (m *Monitor) Start() error {
@@ -1045,8 +375,8 @@ func (m *Monitor) Start() error {
 	m.checkDeliveryTime()
 
 	// 立即检查 Cookie 过期状态并显示状态
-	log.Printf("Cookie 状态: %s", m.getCookieStatus())
-	m.checkCookieExpiration()
+	log.Printf("Cookie 状态: %s", m.cookieManager.GetStatus())
+	m.cookieManager.CheckExpiration()
 
 	// 添加定时任务 - 订单检查
 	_, err := m.cron.AddFunc(m.CheckInterval, m.checkDeliveryTime)
@@ -1057,7 +387,7 @@ func (m *Monitor) Start() error {
 	// 添加定时任务 - 每日检查 Cookie 过期（凌晨 1 点）
 	_, err = m.cron.AddFunc("0 0 1 * * *", func() {
 		log.Printf("执行定期 Cookie 过期检查")
-		m.checkCookieExpiration()
+		m.cookieManager.CheckExpiration()
 	})
 	if err != nil {
 		log.Printf("警告: 添加 Cookie 过期检查任务失败: %v", err)

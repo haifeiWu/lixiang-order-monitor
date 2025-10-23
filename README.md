@@ -16,6 +16,7 @@
 - 🔗 支持多种通知方式：
   - 微信群机器人
   - ServerChan（Server酱）微信推送
+  - Bark 推送（iOS/macOS）
 - ⚙️ 可配置的检查间隔
 - 📊 详细的日志记录
 - 🛡️ 错误处理和重试机制
@@ -75,6 +76,11 @@ wechat_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_W
 serverchan_sendkey: "SCT123456T"
 serverchan_baseurl: "https://sctapi.ftqq.com/"
 
+# Bark 推送配置 (可选)
+bark_server_url: "http://your_server:8080/your_key"
+bark_sound: "minuet"
+bark_group: "lixiang-monitor"
+
 # 理想汽车请求的 Cookies (必填)
 lixiang_cookies: "你的完整Cookie字符串"
 
@@ -83,7 +89,7 @@ cookie_valid_days: 7                     # Cookie 有效期，默认 7 天
 cookie_updated_at: "2025-10-20 10:00:00" # Cookie 最后更新时间
 ```
 
-**注意**: 至少需要配置一种通知方式（微信群机器人或 ServerChan），否则程序只会记录日志不会发送通知。
+**注意**: 至少需要配置一种通知方式（微信群机器人、ServerChan 或 Bark），否则程序只会记录日志不会发送通知。
 
 ### 5. 配置 Cookie 过期管理（推荐）
 
@@ -106,21 +112,32 @@ cookie_updated_at: "2025-10-20 10:00:00" # Cookie 最后更新时间
 
 ### 3. 配置通知方式
 
-程序支持两种通知方式，可以单独使用或同时配置：
+程序支持三种通知方式，可以单独使用或同时配置：
 
 #### 方式一：微信群机器人（推荐用于团队）
 
 1. 在微信群中添加群机器人
 2. 获取 Webhook URL
 3. 将 URL 配置到 `config.yaml` 中的 `wechat_webhook_url` 字段
-4. 详细步骤请参考 `WECHAT_SETUP.md`
+4. 详细步骤请参考 [WECHAT_SETUP.md](./docs/guides/WECHAT_SETUP.md)
 
 #### 方式二：ServerChan（推荐用于个人）
 
 1. 访问 https://sct.ftqq.com/ 注册账号
 2. 获取你的 SendKey
 3. 将 SendKey 配置到 `config.yaml` 中的 `serverchan_sendkey` 字段
-4. 详细步骤请参考 `SERVERCHAN_SETUP.md`
+4. 详细步骤请参考 [SERVERCHAN_SETUP.md](./docs/guides/SERVERCHAN_SETUP.md)
+
+#### 方式三：Bark 推送（推荐 iOS/macOS 用户）
+
+1. 在 App Store 下载 Bark App
+2. 获取推送 URL（自动生成或自建服务器）
+3. 将 URL 配置到 `config.yaml` 中的 `bark_server_url` 字段
+4. 详细步骤请参考 [BARK_SETUP.md](./docs/guides/BARK_SETUP.md)
+
+**推荐组合**：
+- iOS/Mac 用户：Bark + 微信机器人（双保险）
+- 其他用户：ServerChan + 微信机器人
 
 ### 4. 获取理想汽车 Cookies
 
