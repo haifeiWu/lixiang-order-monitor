@@ -13,22 +13,27 @@ type Info struct {
 	LockOrderTime    time.Time
 	EstimateWeeksMin int
 	EstimateWeeksMax int
+	// 缓存计算结果以提升性能
+	cachedMinDate time.Time
+	cachedMaxDate time.Time
 }
 
 // NewInfo 创建交付信息
 func NewInfo(lockOrderTime time.Time, estimateWeeksMin, estimateWeeksMax int) *Info {
-	return &Info{
+	info := &Info{
 		LockOrderTime:    lockOrderTime,
 		EstimateWeeksMin: estimateWeeksMin,
 		EstimateWeeksMax: estimateWeeksMax,
 	}
+	// 预计算并缓存交付日期
+	info.cachedMinDate = lockOrderTime.AddDate(0, 0, estimateWeeksMin*7)
+	info.cachedMaxDate = lockOrderTime.AddDate(0, 0, estimateWeeksMax*7)
+	return info
 }
 
-// CalculateEstimatedDelivery 计算预计交付日期范围
+// CalculateEstimatedDelivery 计算预计交付日期范围（使用缓存以提升性能）
 func (d *Info) CalculateEstimatedDelivery() (time.Time, time.Time) {
-	minDate := d.LockOrderTime.AddDate(0, 0, d.EstimateWeeksMin*7)
-	maxDate := d.LockOrderTime.AddDate(0, 0, d.EstimateWeeksMax*7)
-	return minDate, maxDate
+	return d.cachedMinDate, d.cachedMaxDate
 }
 
 // CalculateRemainingDeliveryTime 基于当前时间计算剩余交付时间

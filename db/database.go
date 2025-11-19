@@ -37,6 +37,11 @@ func New(dbPath string) (*Database, error) {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
 
+	// 优化数据库连接池配置以提升性能
+	db.SetMaxOpenConns(25)                 // 最大打开连接数
+	db.SetMaxIdleConns(5)                  // 最大空闲连接数
+	db.SetConnMaxLifetime(5 * time.Minute) // 连接最大生命周期
+
 	// 测试连接
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("连接数据库失败: %w", err)
@@ -203,6 +208,42 @@ func (d *Database) GetRecordsCount(orderID string) (int, error) {
 	}
 
 	return count, nil
+}
+
+// GetStatsOptimized 获取统计数据（优化版本，使用 SQL 聚合而非内存计数）
+func (d *Database) GetStatsOptimized(orderID string) (timeChangedCount, notificationCount int, firstCheckTime, latestCheckTime time.Time, err error) {
+	// 单次查询获取所有统计数据
+	query := `
+	SELECT 
+		COUNT(CASE WHEN time_changed = 1 THEN 1 END) as time_changed_count,
+		COUNT(CASE WHEN notification_sent = 1 THEN 1 END) as notification_count,
+		MIN(check_time) as first_check_time,
+		MAX(check_time) as latest_check_time
+	FROM delivery_records
+	WHERE order_id = ?
+	`
+
+	var firstCheckTimeStr, latestCheckTimeStr sql.NullString
+	err = d.db.QueryRow(query, orderID).Scan(
+		&timeChangedCount,
+		&notificationCount,
+		&firstCheckTimeStr,
+		&latestCheckTimeStr,
+	)
+
+	if err != nil {
+		return 0, 0, time.Time{}, time.Time{}, fmt.Errorf("查询统计数据失败: %w", err)
+	}
+
+	// 解析时间字符串
+	if firstCheckTimeStr.Valid {
+		firstCheckTime, _ = time.Parse("2006-01-02 15:04:05", firstCheckTimeStr.String)
+	}
+	if latestCheckTimeStr.Valid {
+		latestCheckTime, _ = time.Parse("2006-01-02 15:04:05", latestCheckTimeStr.String)
+	}
+
+	return timeChangedCount, notificationCount, firstCheckTime, latestCheckTime, nil
 }
 
 // GetTimeChangedRecords 获取时间发生变化的记录
