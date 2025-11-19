@@ -161,28 +161,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取所有记录用于统计
-	allRecords, err := s.database.GetRecordsByOrderID(s.orderID, totalRecords)
+	// 使用优化的统计查询（单次 SQL 查询代替内存循环）
+	timeChangedCount, notificationCount, firstCheckTime, _, err := s.database.GetStatsOptimized(s.orderID)
 	if err != nil {
-		s.sendJSONError(w, "查询记录失败", http.StatusInternalServerError)
+		s.sendJSONError(w, "查询统计数据失败", http.StatusInternalServerError)
 		return
-	}
-
-	// 统计时间变更和通知次数
-	timeChangedCount := 0
-	notificationCount := 0
-	var firstCheckTime time.Time
-
-	for i, record := range allRecords {
-		if record.TimeChanged {
-			timeChangedCount++
-		}
-		if record.NotificationSent {
-			notificationCount++
-		}
-		if i == len(allRecords)-1 { // 最后一条是最早的
-			firstCheckTime = record.CheckTime
-		}
 	}
 
 	// 计算监控天数
