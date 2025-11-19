@@ -33,6 +33,7 @@ type Manager struct {
 	LastCheckTime             time.Time
 	OnCookieExpired           func(statusCode int, message string)
 	OnCookieExpirationWarning func(timeDesc, expireTime, updatedAt string, ageInDays float64)
+	httpClient                *http.Client // 复用 HTTP 客户端以提高性能
 }
 
 // NewManager 创建 Cookie 管理器
@@ -42,6 +43,9 @@ func NewManager(cookies string, headers map[string]string, validDays int, update
 		Headers:   headers,
 		ValidDays: validDays,
 		UpdatedAt: updatedAt,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
@@ -64,11 +68,8 @@ func (cm *Manager) FetchOrderData(orderID string) (interface{}, error) {
 		req.Header.Set("Cookie", cm.Cookies)
 	}
 
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Do(req)
+	// 复用 HTTP 客户端以提高性能
+	resp, err := cm.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %v", err)
 	}

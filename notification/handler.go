@@ -168,24 +168,29 @@ func (h *Handler) determineNotificationTitleAndReasons(shouldNotifyPeriodic, sho
 
 // buildPeriodicNotificationContent 构建定期通知内容
 func (h *Handler) buildPeriodicNotificationContent(orderID, currentEstimateTime string, notifyReasons []string, isApproaching bool, approachMsg string, shouldNotifyPeriodic bool) string {
-	content := fmt.Sprintf("订单号: %s\n官方预计时间: %s\n通知原因: %s\n\n%s",
+	// 使用 strings.Builder 提高字符串拼接性能
+	var builder strings.Builder
+	builder.Grow(512) // 预分配合理大小
+
+	fmt.Fprintf(&builder, "订单号: %s\n官方预计时间: %s\n通知原因: %s\n\n%s",
 		orderID,
 		currentEstimateTime,
 		strings.Join(notifyReasons, "、"),
 		h.deliveryInfo.GetDetailedDeliveryInfo())
 
 	if isApproaching {
-		content += WarningPrefix + approachMsg
+		builder.WriteString(WarningPrefix)
+		builder.WriteString(approachMsg)
 	}
 
 	// 添加定期通知的额外信息
 	if shouldNotifyPeriodic {
-		content += fmt.Sprintf("\n\n📅 通知间隔: 每%.0f小时\n⏰ 下次通知时间: %s",
+		fmt.Fprintf(&builder, "\n\n📅 通知间隔: 每%.0f小时\n⏰ 下次通知时间: %s",
 			h.notificationInterval.Hours(),
 			time.Now().Add(h.notificationInterval).Format(utils.DateTimeShort))
 	}
 
-	return content
+	return builder.String()
 }
 
 // shouldSendPeriodicNotification 检查是否应该发送定期通知
@@ -217,20 +222,35 @@ func (h *Handler) SetLastNotificationTime(t time.Time) {
 	h.lastNotificationTime = t
 }
 
-// sendNotification 发送通知
+// sendNotification 发送通知（并发发送以提高性能）
 func (h *Handler) sendNotification(title, content string) error {
 	if len(h.notifiers) == 0 {
 		log.Println("未配置任何通知器，跳过通知")
 		return nil
 	}
 
+	// 使用通道收集结果
+	type result struct {
+		err error
+	}
+	results := make(chan result, len(h.notifiers))
+
+	// 并发发送通知
+	for _, n := range h.notifiers {
+		go func(notifier notifier.Notifier) {
+			err := notifier.Send(title, content)
+			results <- result{err: err}
+		}(n)
+	}
+
+	// 收集结果
 	var errors []string
 	successCount := 0
-
-	for _, n := range h.notifiers {
-		if err := n.Send(title, content); err != nil {
-			log.Printf("通知发送失败: %v", err)
-			errors = append(errors, err.Error())
+	for i := 0; i < len(h.notifiers); i++ {
+		res := <-results
+		if res.err != nil {
+			log.Printf("通知发送失败: %v", res.err)
+			errors = append(errors, res.err.Error())
 		} else {
 			successCount++
 		}
