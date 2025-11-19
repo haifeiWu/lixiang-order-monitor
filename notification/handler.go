@@ -222,20 +222,35 @@ func (h *Handler) SetLastNotificationTime(t time.Time) {
 	h.lastNotificationTime = t
 }
 
-// sendNotification 发送通知
+// sendNotification 发送通知（并发发送以提高性能）
 func (h *Handler) sendNotification(title, content string) error {
 	if len(h.notifiers) == 0 {
 		log.Println("未配置任何通知器，跳过通知")
 		return nil
 	}
 
+	// 使用通道收集结果
+	type result struct {
+		err error
+	}
+	results := make(chan result, len(h.notifiers))
+
+	// 并发发送通知
+	for _, n := range h.notifiers {
+		go func(notifier notifier.Notifier) {
+			err := notifier.Send(title, content)
+			results <- result{err: err}
+		}(n)
+	}
+
+	// 收集结果
 	var errors []string
 	successCount := 0
-
-	for _, n := range h.notifiers {
-		if err := n.Send(title, content); err != nil {
-			log.Printf("通知发送失败: %v", err)
-			errors = append(errors, err.Error())
+	for i := 0; i < len(h.notifiers); i++ {
+		res := <-results
+		if res.err != nil {
+			log.Printf("通知发送失败: %v", res.err)
+			errors = append(errors, res.err.Error())
 		} else {
 			successCount++
 		}

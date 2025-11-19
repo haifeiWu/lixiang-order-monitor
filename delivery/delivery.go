@@ -94,13 +94,17 @@ func (d *Info) FormatDeliveryEstimate() string {
 	_, _, status := d.CalculateRemainingDeliveryTime()
 	progress := d.CalculateDeliveryProgress()
 
-	baseInfo := ""
+	// 使用 strings.Builder 提高字符串拼接性能
+	var builder strings.Builder
+	builder.Grow(256) // 预分配合理大小
+
+	// 构建基础信息
 	if d.EstimateWeeksMin == d.EstimateWeeksMax {
-		baseInfo = fmt.Sprintf("预计 %d 周后交付 (%s 左右)",
+		fmt.Fprintf(&builder, "预计 %d 周后交付 (%s 左右)",
 			d.EstimateWeeksMin,
 			minDate.Format(utils.DateFormat))
 	} else {
-		baseInfo = fmt.Sprintf("预计 %d-%d 周后交付 (%s 至 %s)",
+		fmt.Fprintf(&builder, "预计 %d-%d 周后交付 (%s 至 %s)",
 			d.EstimateWeeksMin,
 			d.EstimateWeeksMax,
 			minDate.Format(utils.DateFormat),
@@ -111,17 +115,19 @@ func (d *Info) FormatDeliveryEstimate() string {
 	now := time.Now()
 	if now.Before(minDate) {
 		// 还未到交付时间
-		return fmt.Sprintf("%s\n📅 当前状态: %s\n📊 等待进度: %.1f%%",
-			baseInfo, status, progress)
+		fmt.Fprintf(&builder, "\n📅 当前状态: %s\n📊 等待进度: %.1f%%",
+			status, progress)
 	} else if now.After(maxDate) {
 		// 已超过交付时间
-		return fmt.Sprintf("%s\n⚠️  当前状态: %s\n📊 进度: %.1f%% (已超期)",
-			baseInfo, status, progress)
+		fmt.Fprintf(&builder, "\n⚠️  当前状态: %s\n📊 进度: %.1f%% (已超期)",
+			status, progress)
 	} else {
 		// 在交付时间范围内
-		return fmt.Sprintf("%s\n✅ 当前状态: %s\n📊 进度: %.1f%%",
-			baseInfo, status, progress)
+		fmt.Fprintf(&builder, "\n✅ 当前状态: %s\n📊 进度: %.1f%%",
+			status, progress)
 	}
+
+	return builder.String()
 }
 
 // GetDetailedDeliveryInfo 获取详细的交付时间信息
