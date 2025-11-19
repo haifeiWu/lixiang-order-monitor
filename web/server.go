@@ -147,48 +147,24 @@ type StatsResponse struct {
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// 获取记录总数
-	totalRecords, err := s.database.GetRecordsCount(s.orderID)
+	// 使用优化的统计查询，一次性获取所有统计信息
+	totalRecords, timeChangedCount, notificationCount, firstCheckTime, latestCheckTime, err := s.database.GetStats(s.orderID)
 	if err != nil {
-		s.sendJSONError(w, "查询记录总数失败", http.StatusInternalServerError)
+		s.sendJSONError(w, "查询统计信息失败", http.StatusInternalServerError)
 		return
 	}
 
-	// 获取最新记录
+	// 获取最新记录详情
 	latestRecord, err := s.database.GetLatestRecord(s.orderID)
 	if err != nil {
 		s.sendJSONError(w, "查询最新记录失败", http.StatusInternalServerError)
 		return
 	}
 
-	// 获取所有记录用于统计
-	allRecords, err := s.database.GetRecordsByOrderID(s.orderID, totalRecords)
-	if err != nil {
-		s.sendJSONError(w, "查询记录失败", http.StatusInternalServerError)
-		return
-	}
-
-	// 统计时间变更和通知次数
-	timeChangedCount := 0
-	notificationCount := 0
-	var firstCheckTime time.Time
-
-	for i, record := range allRecords {
-		if record.TimeChanged {
-			timeChangedCount++
-		}
-		if record.NotificationSent {
-			notificationCount++
-		}
-		if i == len(allRecords)-1 { // 最后一条是最早的
-			firstCheckTime = record.CheckTime
-		}
-	}
-
 	// 计算监控天数
 	monitoringDays := 0
-	if !firstCheckTime.IsZero() && latestRecord != nil {
-		monitoringDays = int(latestRecord.CheckTime.Sub(firstCheckTime).Hours() / 24)
+	if !firstCheckTime.IsZero() && !latestCheckTime.IsZero() {
+		monitoringDays = int(latestCheckTime.Sub(firstCheckTime).Hours() / 24)
 	}
 
 	stats := StatsResponse{

@@ -248,6 +248,39 @@ func (d *Database) GetTimeChangedRecords(orderID string, limit int) ([]*Delivery
 	return records, nil
 }
 
+// GetStats 获取统计信息（优化查询性能）
+func (d *Database) GetStats(orderID string) (totalRecords, timeChangedCount, notificationCount int, firstCheckTime, latestCheckTime time.Time, err error) {
+	// 使用单个优化的查询获取所有统计信息
+	query := `
+	SELECT 
+		COUNT(*) as total_records,
+		SUM(CASE WHEN time_changed = 1 THEN 1 ELSE 0 END) as time_changed_count,
+		SUM(CASE WHEN notification_sent = 1 THEN 1 ELSE 0 END) as notification_count,
+		MIN(check_time) as first_check_time,
+		MAX(check_time) as latest_check_time
+	FROM delivery_records
+	WHERE order_id = ?
+	`
+
+	err = d.db.QueryRow(query, orderID).Scan(
+		&totalRecords,
+		&timeChangedCount,
+		&notificationCount,
+		&firstCheckTime,
+		&latestCheckTime,
+	)
+
+	if err == sql.ErrNoRows {
+		return 0, 0, 0, time.Time{}, time.Time{}, nil
+	}
+
+	if err != nil {
+		return 0, 0, 0, time.Time{}, time.Time{}, fmt.Errorf("查询统计信息失败: %w", err)
+	}
+
+	return totalRecords, timeChangedCount, notificationCount, firstCheckTime, latestCheckTime, nil
+}
+
 // Close 关闭数据库连接
 func (d *Database) Close() error {
 	if d.db != nil {

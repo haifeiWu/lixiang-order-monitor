@@ -13,22 +13,27 @@ type Info struct {
 	LockOrderTime    time.Time
 	EstimateWeeksMin int
 	EstimateWeeksMax int
+	// 缓存计算结果以提高性能
+	cachedMinDate time.Time
+	cachedMaxDate time.Time
 }
 
 // NewInfo 创建交付信息
 func NewInfo(lockOrderTime time.Time, estimateWeeksMin, estimateWeeksMax int) *Info {
-	return &Info{
+	info := &Info{
 		LockOrderTime:    lockOrderTime,
 		EstimateWeeksMin: estimateWeeksMin,
 		EstimateWeeksMax: estimateWeeksMax,
 	}
+	// 预计算并缓存交付日期，避免重复计算
+	info.cachedMinDate = lockOrderTime.AddDate(0, 0, estimateWeeksMin*7)
+	info.cachedMaxDate = lockOrderTime.AddDate(0, 0, estimateWeeksMax*7)
+	return info
 }
 
-// CalculateEstimatedDelivery 计算预计交付日期范围
+// CalculateEstimatedDelivery 计算预计交付日期范围（使用缓存）
 func (d *Info) CalculateEstimatedDelivery() (time.Time, time.Time) {
-	minDate := d.LockOrderTime.AddDate(0, 0, d.EstimateWeeksMin*7)
-	maxDate := d.LockOrderTime.AddDate(0, 0, d.EstimateWeeksMax*7)
-	return minDate, maxDate
+	return d.cachedMinDate, d.cachedMaxDate
 }
 
 // CalculateRemainingDeliveryTime 基于当前时间计算剩余交付时间
@@ -129,25 +134,28 @@ func (d *Info) GetDetailedDeliveryInfo() string {
 	// 计算锁单至今的天数
 	daysSinceLock := int(now.Sub(d.LockOrderTime).Hours() / 24)
 
-	info := fmt.Sprintf("📅 锁单时间: %s (%d天前)\n",
-		d.LockOrderTime.Format(utils.DateTimeShort), daysSinceLock)
+	// 使用 strings.Builder 提高字符串拼接性能
+	var builder strings.Builder
+	builder.Grow(256) // 预分配合理大小
 
-	info += fmt.Sprintf("🔮 基于锁单时间预测: %s\n", d.FormatDeliveryEstimate())
-	info += fmt.Sprintf("📊 当前状态: %s (进度: %.1f%%)\n", status, progress)
+	fmt.Fprintf(&builder, "📅 锁单时间: %s (%d天前)\n",
+		d.LockOrderTime.Format(utils.DateTimeShort), daysSinceLock)
+	fmt.Fprintf(&builder, "🔮 基于锁单时间预测: %s\n", d.FormatDeliveryEstimate())
+	fmt.Fprintf(&builder, "📊 当前状态: %s (进度: %.1f%%)\n", status, progress)
 
 	// 添加具体的倒计时信息
 	if now.Before(minDate) {
 		daysToMin := int(minDate.Sub(now).Hours() / 24)
 		daysToMax := int(maxDate.Sub(now).Hours() / 24)
 		if daysToMin <= 7 {
-			info += fmt.Sprintf("⏰ 距离最早交付时间: %d天\n", daysToMin)
+			fmt.Fprintf(&builder, "⏰ 距离最早交付时间: %d天\n", daysToMin)
 		}
 		if daysToMax <= 14 {
-			info += fmt.Sprintf("⏰ 距离最晚交付时间: %d天\n", daysToMax)
+			fmt.Fprintf(&builder, "⏰ 距离最晚交付时间: %d天\n", daysToMax)
 		}
 	}
 
-	return info
+	return builder.String()
 }
 
 // GetAnalysisReport 获取交付时间智能分析报告
@@ -157,45 +165,49 @@ func (d *Info) GetAnalysisReport() string {
 	daysToMin, _, status := d.CalculateRemainingDeliveryTime()
 	progress := d.CalculateDeliveryProgress()
 
-	report := "📊 交付时间智能分析报告\n"
-	report += "=" + strings.Repeat("=", 30) + "\n\n"
+	// 使用 strings.Builder 提高字符串拼接性能
+	var builder strings.Builder
+	builder.Grow(512) // 预分配合理大小
+
+	builder.WriteString("📊 交付时间智能分析报告\n")
+	builder.WriteString("=")
+	builder.WriteString(strings.Repeat("=", 30))
+	builder.WriteString("\n\n")
 
 	// 基本信息
 	daysSinceLock := int(now.Sub(d.LockOrderTime).Hours() / 24)
-	report += fmt.Sprintf("🔐 锁单信息: %s (%d天前)\n",
+	fmt.Fprintf(&builder, "🔐 锁单信息: %s (%d天前)\n",
 		d.LockOrderTime.Format(utils.DateTimeShort), daysSinceLock)
-
-	report += fmt.Sprintf("📅 预计交付: %s - %s\n",
+	fmt.Fprintf(&builder, "📅 预计交付: %s - %s\n",
 		minDate.Format(utils.DateFormat), maxDate.Format(utils.DateFormat))
-
-	report += fmt.Sprintf("📈 当前进度: %.1f%%\n", progress)
-	report += fmt.Sprintf("⏱️  剩余时间: %s\n\n", status)
+	fmt.Fprintf(&builder, "📈 当前进度: %.1f%%\n", progress)
+	fmt.Fprintf(&builder, "⏱️  剩余时间: %s\n\n", status)
 
 	// 时间状态分析
 	if now.Before(minDate) {
 		if daysToMin <= 3 {
-			report += "🚨 紧急提醒: 即将进入交付时间窗口！\n"
+			builder.WriteString("🚨 紧急提醒: 即将进入交付时间窗口！\n")
 		} else if daysToMin <= 7 {
-			report += "⚡ 重要提醒: 距离交付时间不到一周\n"
+			builder.WriteString("⚡ 重要提醒: 距离交付时间不到一周\n")
 		} else if daysToMin <= 14 {
-			report += "📢 提前提醒: 距离交付时间不到两周\n"
+			builder.WriteString("📢 提前提醒: 距离交付时间不到两周\n")
 		} else {
-			report += "😌 状态良好: 还有充足的等待时间\n"
+			builder.WriteString("😌 状态良好: 还有充足的等待时间\n")
 		}
 	} else if now.After(minDate) && now.Before(maxDate) {
-		report += "🎯 关键时期: 正处于预计交付时间范围内\n"
-		report += "👀 建议: 密切关注官方通知\n"
+		builder.WriteString("🎯 关键时期: 正处于预计交付时间范围内\n")
+		builder.WriteString("👀 建议: 密切关注官方通知\n")
 	} else if now.After(maxDate) {
 		overdueDays := int(now.Sub(maxDate).Hours() / 24)
-		report += "⚠️  延期状态: 已超过预计交付时间\n"
+		builder.WriteString("⚠️  延期状态: 已超过预计交付时间\n")
 		if overdueDays <= 7 {
-			report += "💡 建议: 可联系客服了解具体情况\n"
+			builder.WriteString("💡 建议: 可联系客服了解具体情况\n")
 		} else {
-			report += "📞 建议: 强烈建议联系客服获取最新进展\n"
+			builder.WriteString("📞 建议: 强烈建议联系客服获取最新进展\n")
 		}
 	}
 
-	return report
+	return builder.String()
 }
 
 // IsApproachingDelivery 检查是否临近预计交付时间
